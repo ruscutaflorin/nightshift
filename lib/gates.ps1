@@ -33,6 +33,22 @@ function Get-PassedTestCount([string]$Output, [string]$Pattern) {
     return $found
 }
 
+# One informative line from a failure reason for the report / task note: skips code fences and
+# bare headers ("The reviewer requested changes:" -> "The reviewer requested changes: <first issue>").
+function Get-ShortReason([string]$Reason, [int]$Max = 200) {
+    if (-not $Reason) { return 'failed without a recorded reason' }
+    $lines = @($Reason -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -and $_ -notmatch '^```' })
+    if ($lines.Count -eq 0) { return 'failed without a recorded reason' }
+    $first = $lines[0] -replace '\s*Last lines:\s*$', ''
+    if ($lines[0] -match 'Last lines:\s*$' -and $lines.Count -gt 1) {
+        $first = "$first -> $($lines[-1])"
+    } elseif ($first -match ':\s*$' -and $lines.Count -gt 1) {
+        $first = $first.TrimEnd(':', ' ') + ': ' + ($lines[1] -replace '^- ', '')
+    }
+    if ($first.Length -gt $Max) { $first = $first.Substring(0, $Max) + '...' }
+    return $first
+}
+
 # Insertions + deletions from `git diff --shortstat` ("3 files changed, 40 insertions(+), 2 deletions(-)").
 function Get-DiffLineCount([string]$ShortStat) {
     $n = 0

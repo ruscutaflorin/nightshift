@@ -2,6 +2,8 @@
 # Line format: "- [<status>] <id> <text>"  status: ' ' open, 'x' done, '>' user-owned, '!' failed.
 
 $script:TaskLinePattern = '^- \[([ x>!])\] (\S+) (.*)$'
+# Task ids: "3.4", or "2.3a" when a task was split after the fact.
+$script:TaskIdPattern = '^\d+\.\d+[a-z]?$'
 
 function Read-TextFile([string]$Path) {
     $text = [IO.File]::ReadAllText($Path)
@@ -43,7 +45,7 @@ function Read-TaskList([string]$Path) {
 function Get-NextTask($Tasks, [string[]]$SkipIds = @()) {
     $blockedPhases = @{}
     foreach ($t in $Tasks) {
-        if ($t.Id -notmatch '^\d+\.\d+$') { continue }
+        if ($t.Id -notmatch $script:TaskIdPattern) { continue }
         if ($t.Status -eq '!') { $blockedPhases[$t.Phase] = $true; continue }
         if ($t.Status -ne ' ') { continue }
         if ($blockedPhases.ContainsKey($t.Phase)) { continue }
@@ -66,7 +68,7 @@ function Get-NextTaskBatch($Tasks, [int]$MaxTasks = 1, [int]$MaxTextLength = 240
     foreach ($t in $Tasks) {
         if (-not $started) { if ($t.Id -eq $first.Id) { $started = $true }; continue }
         if ($batch.Count -ge $MaxTasks) { break }
-        if ($t.Phase -ne $first.Phase -or $t.Status -ne ' ' -or $t.Id -notmatch '^\d+\.\d+$') { break }
+        if ($t.Phase -ne $first.Phase -or $t.Status -ne ' ' -or $t.Id -notmatch $script:TaskIdPattern) { break }
         if ($t.Text.Length -gt $MaxTextLength -or $NoBatchIds -contains $t.Id) { break }
         [void]$batch.Add($t)
     }

@@ -192,6 +192,17 @@ try {
     Assert-Equal '' (Get-PhaseSection $batchFile '9') 'unknown phase -> empty'
     Assert-Equal $true ((Get-PhaseSection $batchFile '3') -notmatch 'Phase 4') 'phase 3 does not bleed into phase 4'
 
+    Assert-Equal 'The reviewer requested changes: a.json:3 - near-duplicate - replace it' (Get-ShortReason "The reviewer requested changes:`n- a.json:3 - near-duplicate - replace it`n- b.json:1 - x") 'short reason names the first reviewer issue'
+    Assert-Equal "Check 'test' failed, exit code 1. -> 00:05 +40 -2: Some tests failed." (Get-ShortReason "Check 'test' failed, exit code 1. Last lines:`n``````n00:01 +3: loading`n00:05 +40 -2: Some tests failed.`n``````") 'short reason for a check keeps the last output line'
+    Assert-Equal 'BLOCKED-ish plain line' (Get-ShortReason 'BLOCKED-ish plain line') 'plain one-liner unchanged'
+    Assert-Equal 'failed without a recorded reason' (Get-ShortReason '') 'empty reason'
+
+    $splitFile = Join-Path $tmp 'SPLIT.md'
+    [IO.File]::WriteAllText($splitFile, "## Phase 2 - Data`n`n- [x] 2.2 done`n- [ ] 2.3a spring palettes`n- [ ] 2.3b summer palettes`n- [ ] 2.4 metals", (New-Object Text.UTF8Encoding($false)))
+    $sl = Read-TaskList $splitFile
+    Assert-Equal '2.3a' (Get-NextTask $sl).Id 'letter-suffixed ids are real tasks'
+    Assert-Equal '2.3a 2.3b' ((Get-NextTaskBatch $sl 2 240 @() | ForEach-Object { $_.Id }) -join ' ') 'letter-suffixed ids batch normally'
+
     # ---------------------------------------------------------- config.ps1
     $base = '{"a":1,"models":{"builder":"sonnet","reviewer":"sonnet"},"gates":[1,2]}' | ConvertFrom-Json
     $over = '{"models":{"builder":"opus"},"gates":[3],"extra":true}' | ConvertFrom-Json

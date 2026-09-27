@@ -210,10 +210,12 @@ function Invoke-Agent([string]$Role, [string]$Prompt, [string]$Model, [switch]$R
 }
 
 # Retries through usage limits (sleeping until reset) and transient API errors.
-function Invoke-AgentSafely([string]$Role, [string]$Prompt, [string]$Model, [switch]$ReadOnly) {
+# -IgnoreDeadline: used for the review of work that already passed its checks, so a deadline
+# never throws away a finished task.
+function Invoke-AgentSafely([string]$Role, [string]$Prompt, [string]$Model, [switch]$ReadOnly, [switch]$IgnoreDeadline) {
     $transientTries = 0
     while ($true) {
-        if ((Get-Date) -ge $script:Deadline) { Stop-Night 'deadline reached' }
+        if (-not $IgnoreDeadline -and (Get-Date) -ge $script:Deadline) { Stop-Night 'deadline reached' }
         $r = Invoke-Agent -Role $Role -Prompt $Prompt -Model $Model -ReadOnly:$ReadOnly
         if ($r.LimitHit) {
             $now = Get-Date
@@ -356,7 +358,7 @@ function Invoke-Review($Item) {
     Write-Log "review: $lines changed lines -> $model"
     $prompt = Expand-Template 'reviewer' @{ TASK = $Item.TaskText; STAT = $stat; DIFF = $diff }
     for ($i = 0; $i -lt 2; $i++) {
-        $r = Invoke-AgentSafely -Role "review-$($Item.Id)" -Prompt $prompt -Model $model -ReadOnly
+        $r = Invoke-AgentSafely -Role "review-$($Item.Id)" -Prompt $prompt -Model $model -ReadOnly -IgnoreDeadline
         $verdict = Get-ReviewVerdict $r.Result
         if ($verdict) { return $verdict }
     }
@@ -385,28 +387,47 @@ function Complete-Merge($Item, [string]$Branch, $Gates, [int]$Attempt) {
     Write-Log "merged $($Item.Id)"
 }
 
+# Failed work is parked under <prefix>-failed/ so it is kept for inspection but never resumed;
+# a branch with no commits of its own is just noise and is deleted. Returns the kept name or ''.
+function Save-FailedBranch([string]$Branch) {
+    if ([int](((Invoke-Git "rev-list --count $($script:Base)..$Branch") -join '').Trim()) -eq 0) {
+        Invoke-Git "branch -q -D $Branch" -AllowFail | Out-Null
+        return ''
+    }
+    $prefix = $script:Config.branchPrefix
+    $failed = $prefix.TrimEnd('/') + '-failed/' + $Branch.Substring($prefix.Length)
+    Invoke-Git "branch -q -M $Branch $failed" -AllowFail | Out-Null
+    return $failed
+}
+
+# The newest unfinished branch for exactly this item (left by a deadline, crash or sleep).
+function Find-ResumableBranch([string]$Safe) {
+    $pattern = '^' + [regex]::Escape("$($script:Config.branchPrefix)$Safe-") + '\d{8}-\d{4}$'
+    $names = @(Invoke-Git 'branch --list --format=%(refname:short)' | ForEach-Object { $_.Trim() } | Where-Object { $_ -match $pattern } | Sort-Object -Descending)
+    foreach ($b in $names) {
+        if ([int](((Invoke-Git "rev-list --count $($script:Base)..$b") -join '').Trim()) -gt 0) { return $b }
+    }
+    return $null
+}
+
 function Complete-Failure($Item, [string]$Branch, [string]$Reason, [switch]$Blocked) {
     if (Test-TreeDirty) { New-Commit "wip($($Item.Id)): state at failure" | Out-Null }
     Invoke-Git "switch -q $($script:Base)" | Out-Null
-    if (-not $Reason) { $Reason = 'failed without a recorded reason' }
-    $short = ($Reason -split "`n")[0]
+    $short = Get-ShortReason $Reason
+    $kept = Save-FailedBranch $Branch
+    $where = if ($kept) { "; branch ``$kept``" } else { '' }
     # A failed batch is not a verdict on its tasks: retry them one at a time instead.
     if ($Item.Kind -eq 'task' -and $Item.Ids.Count -gt 1) {
         foreach ($id in $Item.Ids) { [void]$script:NoBatch.Add($id) }
-        Add-Report "- [batch retry] $($Item.Id) - $short; branch ``$Branch``; retrying one task at a time"
+        Add-Report "- [batch retry] $($Item.Id) - $short$where; retrying one task at a time"
         Write-Log "batch $($Item.Id) failed ($short); retrying singly"
         return
     }
-    $note = if ($Blocked) { "BLOCKED: $short" } else { "$short (branch $Branch)" }
+    $note = if ($Blocked) { "BLOCKED: $short" } elseif ($kept) { "$short (branch $kept)" } else { $short }
     switch ($Item.Kind) {
         'task' { Set-TaskStatus $script:TasksPath $Item.Id '!' $note; New-Commit "chore(tasks): mark $($Item.Id) failed" @($script:Config.files.tasks) | Out-Null }
         'backlog' { Set-TaskStatus $script:BacklogPath $Item.Id '!' $note; New-Commit "chore(backlog): mark $($Item.Id) failed" @($script:Config.files.backlog) | Out-Null }
     }
-    # A branch with no commits of its own is just noise.
-    if ([int](((Invoke-Git "rev-list --count $($script:Base)..$Branch") -join '').Trim()) -eq 0) {
-        Invoke-Git "branch -q -D $Branch" -AllowFail | Out-Null
-        $where = ''
-    } else { $where = "; branch ``$Branch``" }
     if ($Blocked) { $script:Stats.Blocked++ } else { $script:Stats.Failed++ }
     $tag = if ($Blocked) { 'blocked' } else { 'failed' }
     Add-Report "- [$tag] $($Item.Id) $($Item.Text) - $short$where"
@@ -415,8 +436,29 @@ function Complete-Failure($Item, [string]$Branch, [string]$Reason, [switch]$Bloc
 
 function Invoke-WorkItem($Item) {
     $safe = $Item.Id -replace '[^A-Za-z0-9.-]', '-'
-    $branch = "$($script:Config.branchPrefix)$safe-$(Get-Date -Format 'yyyyMMdd-HHmm')"
-    Invoke-Git "switch -q -c $branch $($script:Base)" | Out-Null
+    # Resume unfinished work for this exact item instead of rebuilding it: bring it up to date
+    # with the base branch, then go straight to the checks + review. Conflicts -> start fresh.
+    $resumed = $false
+    $branch = if ($Item.Kind -in @('task', 'backlog')) { Find-ResumableBranch $safe } else { $null }
+    if ($branch) {
+        Invoke-Git "switch -q $branch" | Out-Null
+        try {
+            Invoke-Git "merge -q --no-edit --no-verify $($script:Base)" | Out-Null
+            $resumed = $true
+            Write-Log "resuming $branch (re-checking its existing work)"
+            Add-Report "- [resume] $($Item.Id) from ``$branch``"
+        } catch {
+            Invoke-Git 'merge --abort' -AllowFail | Out-Null
+            Invoke-Git "switch -q $($script:Base)" | Out-Null
+            Write-Log "cannot resume $branch (merge conflict with $($script:Base)); starting fresh"
+            Save-FailedBranch $branch | Out-Null
+            $branch = $null
+        }
+    }
+    if (-not $branch) {
+        $branch = "$($script:Config.branchPrefix)$safe-$(Get-Date -Format 'yyyyMMdd-HHmm')"
+        Invoke-Git "switch -q -c $branch $($script:Base)" | Out-Null
+    }
     Write-Log "=== $($Item.Kind) $($Item.Id): $($Item.Text) on $branch"
     Initialize-ServicesForItem $Item
 
@@ -438,7 +480,11 @@ function Invoke-WorkItem($Item) {
         }
 
         $role = if ($attempt -eq 1) { "build-$safe" } else { "fix-$safe" }
-        $r = Invoke-AgentSafely -Role $role -Prompt $prompt -Model $model
+        if ($resumed -and $attempt -eq 1) {
+            $r = [pscustomobject]@{ Result = ''; TimedOut = $false }   # existing work: skip straight to the checks
+        } else {
+            $r = Invoke-AgentSafely -Role $role -Prompt $prompt -Model $model
+        }
 
         if ($r.Result -match '(?m)^\s*BLOCKED:\s*(.+)$') {
             if ($Item.Kind -eq 'polish') { $script:PolishExhausted = $true }
