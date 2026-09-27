@@ -1,0 +1,2 @@
+- Follow the conventions in `CLAUDE.md`.
+- Add project-specific rules here (architecture boundaries, commands to use, things never to do). The night-shift agents receive this file in every prompt.

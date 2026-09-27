@@ -1,0 +1,16 @@
+{
+  "config": {
+    "baseBranch": "develop",
+    "stopAt": "07:00",
+    "gates": [
+      { "name": "format", "run": "ruff format .", "autoFix": true },
+      { "name": "lint", "run": "ruff check ." },
+      { "name": "test", "run": "pytest -q", "countTests": true, "testCountPattern": "(\\d+) passed" }
+    ],
+    "services": {},
+    "protectedPaths": {},
+    "reviewExclude": [":(exclude)*.lock", ":(exclude)**/*.png", ":(exclude)**/*.jpg"]
+  },
+  "allow": ["Bash(python:*)", "Bash(pytest:*)", "Bash(ruff:*)", "Bash(pip:*)", "Bash(uv:*)"],
+  "deny": ["Bash(twine:*)"]
+}

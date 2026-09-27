@@ -1,0 +1,11 @@
+{
+  "config": {
+    "baseBranch": "develop",
+    "stopAt": "07:00",
+    "gates": [],
+    "services": {},
+    "protectedPaths": {}
+  },
+  "allow": [],
+  "deny": []
+}
