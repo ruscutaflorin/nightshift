@@ -10,9 +10,13 @@ A previous attempt at this task was rejected. You are on the same branch, with i
 
 {{FEEDBACK}}
 
-## How to work
+## Where it sits (this phase of `{{TASKS_FILE}}`)
 
-1. Read `CLAUDE.md` (if present) and `{{NOTES_FILE}}`. Inspect what the previous attempt did: `git log --oneline {{BASE}}..HEAD` and `git diff {{BASE}}...HEAD`.
+{{PHASE_CONTEXT}}
+
+## How to work (keep context lean)
+
+1. `CLAUDE.md` is already loaded; don't re-read it. Inspect what the previous attempt did: `git log --oneline {{BASE}}..HEAD` and `git diff --stat {{BASE}}...HEAD`, then read only the files the feedback points at.
 2. Fix exactly the problems above. Keep what was good. Stay within the task's scope.
 3. Make these checks pass:
 {{VERIFY}}

@@ -148,6 +148,50 @@ try {
     Assert-Equal $true (Test-GateCondition ('{"taskDone":"0.1"}' | ConvertFrom-Json) $tmp @() $tl) 'taskDone satisfied'
     Assert-Equal $false (Test-GateCondition ('{"taskDone":"1.2","fileExists":"pubspec.yaml"}' | ConvertFrom-Json) $tmp @() $tl) 'all keys must hold'
 
+    $v = Get-ProtectedPathViolations @('test/architecture/a.dart') $protected @('1.11', '1.12')
+    Assert-Equal 0 $v.Count 'a batch owns a path if any of its tasks owns it'
+    Assert-Equal 42 (Get-DiffLineCount ' 3 files changed, 40 insertions(+), 2 deletions(-)') 'diff line count'
+    Assert-Equal 1 (Get-DiffLineCount ' 1 file changed, 1 insertion(+)') 'diff line count, singular'
+    Assert-Equal 0 (Get-DiffLineCount '') 'empty diff'
+
+    # ---------------------------------------------------------- batching + phase slice
+    $batchFile = Join-Path $tmp 'BATCH.md'
+    $long = 'x' * 300
+    $bt = @(
+        '## Phase 3 - Engine', '',
+        '- [x] 3.1 done',
+        '- [ ] 3.2 small a',
+        '- [ ] 3.3 small b',
+        '- [ ] 3.4 small c',
+        '- [ ] 3.5 small d', '',
+        '## Phase 4 - Data', '',
+        '- [ ] 4.1 small e',
+        "- [ ] 4.2 $long",
+        '- [ ] 4.3 small f', '',
+        '## Rules', '- A.1 not a task'
+    ) -join "`n"
+    [IO.File]::WriteAllText($batchFile, $bt, (New-Object Text.UTF8Encoding($false)))
+    $bl2 = Read-TaskList $batchFile
+    Assert-Equal '3.2 3.3 3.4' ((Get-NextTaskBatch $bl2 3 240 @() | ForEach-Object { $_.Id }) -join ' ') 'batches up to maxTasks in one phase'
+    Assert-Equal '3.2' ((Get-NextTaskBatch $bl2 1 240 @() | ForEach-Object { $_.Id }) -join ' ') 'maxTasks 1 disables batching'
+    Assert-Equal '3.2' ((Get-NextTaskBatch $bl2 3 240 @('3.2') | ForEach-Object { $_.Id }) -join ' ') 'no-batch ids run alone'
+    Set-TaskStatus $batchFile '3.2' 'x'; Set-TaskStatus $batchFile '3.3' 'x'; Set-TaskStatus $batchFile '3.4' 'x'
+    $bl2 = Read-TaskList $batchFile
+    Assert-Equal '3.5' ((Get-NextTaskBatch $bl2 3 240 @() | ForEach-Object { $_.Id }) -join ' ') 'batch never crosses a phase'
+    Set-TaskStatus $batchFile '3.5' 'x'
+    $bl2 = Read-TaskList $batchFile
+    Assert-Equal '4.1' ((Get-NextTaskBatch $bl2 3 240 @() | ForEach-Object { $_.Id }) -join ' ') 'long task ends the batch'
+    Set-TaskStatus $batchFile '4.1' 'x'
+    $bl2 = Read-TaskList $batchFile
+    Assert-Equal '4.2' ((Get-NextTaskBatch $bl2 3 240 @() | ForEach-Object { $_.Id }) -join ' ') 'long task runs alone'
+    $emptyBatch = Get-NextTaskBatch @() 3 240 @()
+    Assert-Equal 0 $emptyBatch.Count 'empty list -> empty batch'
+
+    $section = Get-PhaseSection $batchFile '4'
+    Assert-Equal $true ($section.StartsWith('## Phase 4') -and $section -match '4\.3 small f' -and $section -notmatch '3\.5|A\.1') 'phase section is just that phase'
+    Assert-Equal '' (Get-PhaseSection $batchFile '9') 'unknown phase -> empty'
+    Assert-Equal $true ((Get-PhaseSection $batchFile '3') -notmatch 'Phase 4') 'phase 3 does not bleed into phase 4'
+
     # ---------------------------------------------------------- config.ps1
     $base = '{"a":1,"models":{"builder":"sonnet","reviewer":"sonnet"},"gates":[1,2]}' | ConvertFrom-Json
     $over = '{"models":{"builder":"opus"},"gates":[3],"extra":true}' | ConvertFrom-Json

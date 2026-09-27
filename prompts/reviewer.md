@@ -29,6 +29,7 @@ plus the protected-path and test-count checks. Your job is what the checks can't
 5. **Maintainability** — would a teammate be comfortable building the next task on top of this?
 
 Only request changes for real problems that matter; do not nitpick style the linters accept.
+Work from the diff above; open a file only when the diff lacks context you genuinely need.
 
 ## Output
 

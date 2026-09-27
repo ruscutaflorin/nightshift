@@ -79,6 +79,9 @@ Everything is optional; defaults live in `lib/config.ps1`.
   "models": { "builder": "sonnet", "escalate": "opus", "reviewer": "sonnet", "product": "opus" },
   "maxAttempts": 2, "agentTimeoutMinutes": 45, "gateTimeoutMinutes": 20,
   "polishCap": 4, "maxProposalsPerNight": 5,
+  "batch": { "maxTasks": 3, "maxTextLength": 240 },           // consecutive short tasks of one phase share a session
+  "review": { "smallDiffLines": 150, "smallModel": "haiku" },  // diffs up to N changed lines get the cheap reviewer
+  "notesMaxLines": 60,                                         // report warns when NOTES.md grows past this
   "files": { "tasks": "TASKS.md", "backlog": "BACKLOG.md", "notes": "NOTES.md", "plan": "PLAN.md", "rules": ".nightshift/rules.md" },
 
   "gates": [                               // run in order after every attempt, by the supervisor itself

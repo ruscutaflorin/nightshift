@@ -53,6 +53,43 @@ function Get-NextTask($Tasks, [string[]]$SkipIds = @()) {
     return $null
 }
 
+# The next task plus following small open tasks of the same phase, so one agent session
+# (and one review) covers several tiny steps. Batching stops at the first task that is not
+# open, too long (a proxy for "not small"), in $NoBatchIds, or from another phase.
+function Get-NextTaskBatch($Tasks, [int]$MaxTasks = 1, [int]$MaxTextLength = 240, [string[]]$NoBatchIds = @()) {
+    $first = Get-NextTask $Tasks
+    if (-not $first) { return , @() }
+    $batch = New-Object System.Collections.ArrayList
+    [void]$batch.Add($first)
+    if ($MaxTasks -le 1 -or $first.Text.Length -gt $MaxTextLength -or $NoBatchIds -contains $first.Id) { return , $batch.ToArray() }
+    $started = $false
+    foreach ($t in $Tasks) {
+        if (-not $started) { if ($t.Id -eq $first.Id) { $started = $true }; continue }
+        if ($batch.Count -ge $MaxTasks) { break }
+        if ($t.Phase -ne $first.Phase -or $t.Status -ne ' ' -or $t.Id -notmatch '^\d+\.\d+$') { break }
+        if ($t.Text.Length -gt $MaxTextLength -or $NoBatchIds -contains $t.Id) { break }
+        [void]$batch.Add($t)
+    }
+    return , $batch.ToArray()
+}
+
+# The "## Phase N" section of a tasks file (heading through the line before the next "## "),
+# given to agents instead of the whole file.
+function Get-PhaseSection([string]$Path, [string]$Phase) {
+    if (-not $Phase) { return '' }
+    $lines = (Read-TextFile $Path).Lines
+    $out = New-Object System.Collections.ArrayList
+    $inside = $false
+    foreach ($line in $lines) {
+        if ($line -match '^## ') {
+            if ($inside) { break }
+            if ($line -match "^## Phase $([regex]::Escape($Phase))\b") { $inside = $true }
+        }
+        if ($inside) { [void]$out.Add($line) }
+    }
+    return (($out -join "`n").Trim())
+}
+
 function Get-NextBacklogTask($Tasks, [string[]]$SkipIds = @()) {
     foreach ($t in $Tasks) {
         if ($t.Id -notmatch '^B\d+$' -or $t.Status -ne ' ') { continue }

@@ -1,8 +1,8 @@
 # Pure helpers behind the merge gates (kept free of git/process calls so they're testable).
 
-# Changed paths that touch a protected prefix the task doesn't own.
+# Changed paths that touch a protected prefix none of the given tasks owns.
 # $Protected is the config.protectedPaths object: prefix -> [task ids allowed to edit it].
-function Get-ProtectedPathViolations([string[]]$ChangedPaths, $Protected, [string]$TaskId) {
+function Get-ProtectedPathViolations([string[]]$ChangedPaths, $Protected, [string[]]$TaskIds) {
     $violations = New-Object System.Collections.ArrayList
     foreach ($path in $ChangedPaths) {
         $p = $path -replace '\\', '/'
@@ -10,7 +10,8 @@ function Get-ProtectedPathViolations([string[]]$ChangedPaths, $Protected, [strin
             $prefix = $prop.Name
             $owners = @($prop.Value)
             $hit = if ($prefix.EndsWith('/')) { $p.StartsWith($prefix) } else { $p -eq $prefix }
-            if ($hit -and -not ($owners -contains $TaskId)) {
+            $owned = [bool]($owners | Where-Object { $TaskIds -contains $_ })
+            if ($hit -and -not $owned) {
                 [void]$violations.Add($p)
             }
         }
@@ -30,6 +31,14 @@ function Get-PassedTestCount([string]$Output, [string]$Pattern) {
         $found = [int]$m.Groups[1].Value
     }
     return $found
+}
+
+# Insertions + deletions from `git diff --shortstat` ("3 files changed, 40 insertions(+), 2 deletions(-)").
+function Get-DiffLineCount([string]$ShortStat) {
+    $n = 0
+    if ($ShortStat -match '(\d+) insertions?\(\+\)') { $n += [int]$Matches[1] }
+    if ($ShortStat -match '(\d+) deletions?\(-\)') { $n += [int]$Matches[1] }
+    return $n
 }
 
 # Whether a gate/service condition holds. All given keys must hold; a missing/empty $When is true.

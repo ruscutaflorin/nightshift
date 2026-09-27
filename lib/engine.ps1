@@ -35,6 +35,7 @@ function Initialize-Engine([string]$Root, [string]$EngineDir, [datetime]$Deadlin
     $script:ReadyServices = @{}
     $script:ForcedTask = $null
     $script:ForcedTaskUsed = $false
+    $script:NoBatch = New-Object System.Collections.ArrayList   # ids whose batch failed: retry one at a time
 
     Set-Location $Root
     [Environment]::CurrentDirectory = $Root
@@ -127,9 +128,23 @@ function Get-VerifyText {
 
 function Get-ProtectedText($Item) {
     $names = foreach ($p in $script:Protected.PSObject.Properties) {
-        if (-not (@($p.Value) -contains $Item.Id)) { "``$($p.Name)``" }
+        if (-not (@($p.Value) | Where-Object { $Item.Ids -contains $_ })) { "``$($p.Name)``" }
     }
     return ($names -join ', ')
+}
+
+# Work item for one task or a batch of consecutive small tasks.
+function New-TaskItem([object[]]$Tasks, [string]$Kind = 'task') {
+    $ids = @($Tasks | ForEach-Object { $_.Id })
+    if ($ids.Count -eq 1) {
+        $taskText = "$($Tasks[0].Id) $($Tasks[0].Text)"
+        $text = $Tasks[0].Text
+    } else {
+        $list = ($Tasks | ForEach-Object { "- $($_.Id) $($_.Text)" }) -join "`n"
+        $taskText = "These $($ids.Count) consecutive small tasks, done together in this one session (make one commit per task, each message naming its id):`n$list"
+        $text = ($Tasks | ForEach-Object { $_.Text }) -join ' | '
+    }
+    return [pscustomobject]@{ Kind = $Kind; Id = ($ids -join '+'); Ids = $ids; Text = $text; TaskText = $taskText; Phase = $Tasks[0].Phase }
 }
 
 function Expand-Template([string]$Name, [hashtable]$Values) {
@@ -144,6 +159,7 @@ function Expand-Template([string]$Name, [hashtable]$Values) {
         BASE          = $script:Base
         VERIFY        = Get-VerifyText
         PROJECT_RULES = Get-ProjectRules
+        PHASE_CONTEXT = '(not applicable)'
     }
     foreach ($k in $common.Keys) { if (-not $Values.ContainsKey($k)) { $Values[$k] = $common[$k] } }
     foreach ($k in $Values.Keys) { $text = $text.Replace("{{$k}}", [string]$Values[$k]) }
@@ -333,9 +349,14 @@ function Invoke-Review($Item) {
     $excludes = (@($script:Config.reviewExclude) | ForEach-Object { "`"$_`"" }) -join ' '
     $diff = (Invoke-Git "diff $($script:Base)...HEAD -- . $excludes") -join "`n"
     if ($diff.Length -gt 120000) { $diff = $diff.Substring(0, 120000) + "`n... [diff truncated - read the files directly]" }
-    $prompt = Expand-Template 'reviewer' @{ TASK = "$($Item.Id) $($Item.Text)"; STAT = $stat; DIFF = $diff }
+    # Small diffs get the cheap reviewer; real logic gets the full one.
+    $lines = Get-DiffLineCount ((Invoke-Git "diff --shortstat $($script:Base)...HEAD -- . $excludes") -join ' ')
+    $model = $script:Config.models.reviewer
+    if ($script:Config.review.smallModel -and $lines -le [int]$script:Config.review.smallDiffLines) { $model = $script:Config.review.smallModel }
+    Write-Log "review: $lines changed lines -> $model"
+    $prompt = Expand-Template 'reviewer' @{ TASK = $Item.TaskText; STAT = $stat; DIFF = $diff }
     for ($i = 0; $i -lt 2; $i++) {
-        $r = Invoke-AgentSafely -Role "review-$($Item.Id)" -Prompt $prompt -Model $script:Config.models.reviewer -ReadOnly
+        $r = Invoke-AgentSafely -Role "review-$($Item.Id)" -Prompt $prompt -Model $model -ReadOnly
         $verdict = Get-ReviewVerdict $r.Result
         if ($verdict) { return $verdict }
     }
@@ -352,7 +373,10 @@ function Complete-Merge($Item, [string]$Branch, $Gates, [int]$Attempt) {
     Invoke-Git "merge -q --no-ff --no-verify -F `"$msgFile`" $Branch" | Out-Null
     if ($null -ne $Gates.TestCount) { Set-TestBaseline $Gates.TestCount }
     switch ($Item.Kind) {
-        'task' { Set-TaskStatus $script:TasksPath $Item.Id 'x'; New-Commit "chore(tasks): complete $($Item.Id)" @($script:Config.files.tasks) | Out-Null }
+        'task' {
+            foreach ($id in $Item.Ids) { Set-TaskStatus $script:TasksPath $id 'x' }
+            New-Commit "chore(tasks): complete $($Item.Ids -join ', ')" @($script:Config.files.tasks) | Out-Null
+        }
         'backlog' { Set-TaskStatus $script:BacklogPath $Item.Id 'x'; New-Commit "chore(backlog): complete $($Item.Id)" @($script:Config.files.backlog) | Out-Null }
     }
     Invoke-Git "branch -q -d $Branch" -AllowFail | Out-Null
@@ -366,6 +390,13 @@ function Complete-Failure($Item, [string]$Branch, [string]$Reason, [switch]$Bloc
     Invoke-Git "switch -q $($script:Base)" | Out-Null
     if (-not $Reason) { $Reason = 'failed without a recorded reason' }
     $short = ($Reason -split "`n")[0]
+    # A failed batch is not a verdict on its tasks: retry them one at a time instead.
+    if ($Item.Kind -eq 'task' -and $Item.Ids.Count -gt 1) {
+        foreach ($id in $Item.Ids) { [void]$script:NoBatch.Add($id) }
+        Add-Report "- [batch retry] $($Item.Id) - $short; branch ``$Branch``; retrying one task at a time"
+        Write-Log "batch $($Item.Id) failed ($short); retrying singly"
+        return
+    }
     $note = if ($Blocked) { "BLOCKED: $short" } else { "$short (branch $Branch)" }
     switch ($Item.Kind) {
         'task' { Set-TaskStatus $script:TasksPath $Item.Id '!' $note; New-Commit "chore(tasks): mark $($Item.Id) failed" @($script:Config.files.tasks) | Out-Null }
@@ -389,8 +420,11 @@ function Invoke-WorkItem($Item) {
     Write-Log "=== $($Item.Kind) $($Item.Id): $($Item.Text) on $branch"
     Initialize-ServicesForItem $Item
 
-    $taskText = "$($Item.Id) $($Item.Text)"
+    $taskText = $Item.TaskText
     $protectedText = Get-ProtectedText $Item
+    # Only the task's own phase of the tasks file, so agents don't re-read the whole plan every session.
+    $phase = if ($Item.Kind -eq 'task') { Get-PhaseSection $script:TasksPath $Item.Phase } else { '' }
+    if (-not $phase) { $phase = '(not applicable)' }
     $feedback = $null
     for ($attempt = 1; $attempt -le $script:Config.maxAttempts; $attempt++) {
         $model = if ($attempt -eq 1) { $script:Config.models.builder } else { $script:Config.models.escalate }
@@ -398,9 +432,9 @@ function Invoke-WorkItem($Item) {
             $done = if ($script:PolishDone.Count) { $script:PolishDone -join '; ' } else { 'nothing yet' }
             $prompt = Expand-Template 'polish' @{ DONE_TONIGHT = $done; PROTECTED = $protectedText }
         } elseif ($attempt -eq 1) {
-            $prompt = Expand-Template 'builder' @{ TASK = $taskText; PROTECTED = $protectedText }
+            $prompt = Expand-Template 'builder' @{ TASK = $taskText; PROTECTED = $protectedText; PHASE_CONTEXT = $phase }
         } else {
-            $prompt = Expand-Template 'fixer' @{ TASK = $taskText; FEEDBACK = $feedback; PROTECTED = $protectedText }
+            $prompt = Expand-Template 'fixer' @{ TASK = $taskText; FEEDBACK = $feedback; PROTECTED = $protectedText; PHASE_CONTEXT = $phase }
         }
 
         $role = if ($attempt -eq 1) { "build-$safe" } else { "fix-$safe" }
@@ -423,7 +457,7 @@ function Invoke-WorkItem($Item) {
         }
 
         $changed = @(Invoke-Git "diff --name-only $($script:Base)...HEAD" | Where-Object { $_.Trim() })
-        $violations = Get-ProtectedPathViolations $changed $script:Protected $Item.Id
+        $violations = Get-ProtectedPathViolations $changed $script:Protected $Item.Ids
         if ($violations.Count -gt 0) {
             $feedback = "You modified protected paths this task does not own: $($violations -join ', '). Restore them with ``git checkout $($script:Base) -- <path>`` (or delete them if new), commit, and keep the rest of the work."
             continue
@@ -477,20 +511,23 @@ function Select-NextItem {
         $t = @($tasks) + @($backlog) | Where-Object { $_.Id -eq $script:ForcedTask } | Select-Object -First 1
         if (-not $t) { throw "Task $($script:ForcedTask) not found" }
         $kind = if ($t.Id -match '^B\d+$') { 'backlog' } else { 'task' }
-        return [pscustomobject]@{ Kind = $kind; Id = $t.Id; Text = $t.Text; Phase = $t.Phase }
+        return New-TaskItem @($t) $kind
     }
 
-    $t = Get-NextTask $tasks
-    if ($t) { return [pscustomobject]@{ Kind = 'task'; Id = $t.Id; Text = $t.Text; Phase = $t.Phase } }
+    $batch = Get-NextTaskBatch $tasks ([int]$script:Config.batch.maxTasks) ([int]$script:Config.batch.maxTextLength) @($script:NoBatch)
+    if ($batch.Count -gt 0) { return New-TaskItem $batch 'task' }
 
     $b = Get-NextBacklogTask $backlog
-    if ($b) { return [pscustomobject]@{ Kind = 'backlog'; Id = $b.Id; Text = $b.Text; Phase = 'backlog' } }
+    if ($b) { $item = New-TaskItem @($b) 'backlog'; $item.Phase = 'backlog'; return $item }
 
-    if (-not $script:ProductRan) { return [pscustomobject]@{ Kind = 'product'; Id = 'product'; Text = 'propose backlog items'; Phase = '' } }
+    if (-not $script:ProductRan) {
+        return [pscustomobject]@{ Kind = 'product'; Id = 'product'; Ids = @('product'); Text = 'propose backlog items'; TaskText = 'propose backlog items'; Phase = '' }
+    }
 
     if (-not $script:PolishExhausted -and $script:PolishCount -lt $script:Config.polishCap) {
         $script:PolishCount++
-        return [pscustomobject]@{ Kind = 'polish'; Id = "polish-$($script:PolishCount)"; Text = 'one focused quality improvement'; Phase = '' }
+        $polishId = "polish-$($script:PolishCount)"
+        return [pscustomobject]@{ Kind = 'polish'; Id = $polishId; Ids = @($polishId); Text = 'one focused quality improvement'; TaskText = 'one focused quality improvement'; Phase = '' }
     }
     return $null
 }
@@ -518,6 +555,13 @@ function Write-Summary {
         if ($proposed) {
             Add-Report "- proposals awaiting approval ($($script:Config.files.backlog)):"
             foreach ($p in $proposed) { Add-Report "  - $($p.Id) $($p.Text)" }
+        }
+    }
+    $notesPath = Join-Path $script:Repo $script:Config.files.notes
+    if (Test-Path $notesPath) {
+        $notesLines = @(Get-Content $notesPath).Count
+        if ($notesLines -gt [int]$script:Config.notesMaxLines) {
+            Add-Report "- $($script:Config.files.notes) is $notesLines lines (limit $($script:Config.notesMaxLines)): every agent session reads it, so prune or condense it to keep sessions cheap"
         }
     }
     Add-Report ''
