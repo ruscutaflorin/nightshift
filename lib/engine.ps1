@@ -177,7 +177,10 @@ function Invoke-Agent([string]$Role, [string]$Prompt, [string]$Model, [switch]$R
     if ($ReadOnly) {
         $cli += ' --permission-mode default --allowedTools "Read" "Grep" "Glob" --disallowedTools "Edit" "Write" "Bash" "PowerShell" "NotebookEdit"'
     } else {
-        $cli += ' --permission-mode acceptEdits'
+        # The tasks file is denied here, not in the shared project settings, so interactive
+        # sessions can still maintain it. The supervisor also rejects diffs that touch it.
+        $tasks = $script:Config.files.tasks
+        $cli += " --permission-mode acceptEdits --disallowedTools `"Edit($tasks)`" `"Edit(/$tasks)`" `"Write($tasks)`" `"Write(/$tasks)`""
     }
     Write-Log "agent $Role ($Model) -> $base"
     $code = Invoke-Logged $cli $out $err $in $script:Config.agentTimeoutMinutes
@@ -469,7 +472,8 @@ function Invoke-WorkItem($Item) {
     if (-not $phase) { $phase = '(not applicable)' }
     $feedback = $null
     for ($attempt = 1; $attempt -le $script:Config.maxAttempts; $attempt++) {
-        $model = if ($attempt -eq 1) { $script:Config.models.builder } else { $script:Config.models.escalate }
+        # The escalate model is a last resort: the builder model gets `escalateAfter` tries (fixes included) first.
+        $model = if ($attempt -le [int]$script:Config.escalateAfter) { $script:Config.models.builder } else { $script:Config.models.escalate }
         if ($attempt -eq 1 -and $Item.Kind -eq 'polish') {
             $done = if ($script:PolishDone.Count) { $script:PolishDone -join '; ' } else { 'nothing yet' }
             $prompt = Expand-Template 'polish' @{ DONE_TONIGHT = $done; PROTECTED = $protectedText }

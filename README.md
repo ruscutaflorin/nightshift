@@ -12,7 +12,7 @@ nightshift run / start / scheduled task
     branch night/<id> from develop
     BUILDER (sonnet) -> CHECKS -> REVIEWER (sonnet, read-only) -> merge --no-ff into develop, tick [x]
                           | failed / changes requested
-                          +-> FIXER (opus) with the exact failure, up to maxAttempts
+                          +-> FIXER with the exact failure, up to maxAttempts (sonnet; opus only after escalateAfter failed tries)
                           +-> still failing: mark [!] + reason, keep the branch, skip the rest of that phase
     usage limit -> sleep until the reset (or end the run if that's after the deadline)
 ```
@@ -77,10 +77,11 @@ Everything is optional; defaults live in `lib/config.ps1`.
   "baseBranch": "develop",                 // agents branch from / merge into this
   "stopAt": "07:00",
   "models": { "builder": "sonnet", "escalate": "opus", "reviewer": "sonnet", "product": "opus" },
-  "maxAttempts": 2, "agentTimeoutMinutes": 45, "gateTimeoutMinutes": 20,
+  "maxAttempts": 3, "escalateAfter": 2,   // tries on the builder model before switching to the escalate model
+  "agentTimeoutMinutes": 45, "gateTimeoutMinutes": 20,
   "polishCap": 4, "maxProposalsPerNight": 5,
   "batch": { "maxTasks": 3, "maxTextLength": 240 },           // consecutive short tasks of one phase share a session
-  "review": { "smallDiffLines": 150, "smallModel": "haiku" },  // diffs up to N changed lines get the cheap reviewer
+  "review": { "smallDiffLines": 300, "smallModel": "haiku" },  // diffs up to N changed lines get the cheap reviewer
   "notesMaxLines": 60,                                         // report warns when NOTES.md grows past this
   "files": { "tasks": "TASKS.md", "backlog": "BACKLOG.md", "notes": "NOTES.md", "plan": "PLAN.md", "rules": ".nightshift/rules.md" },
 

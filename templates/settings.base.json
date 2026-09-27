@@ -37,8 +37,6 @@
       "Edit(/.nightshift/**)",
       "Edit(.claude/**)",
       "Edit(/.claude/**)",
-      "Edit(TASKS.md)",
-      "Edit(/TASKS.md)",
       "Edit(CLAUDE.md)",
       "Edit(/CLAUDE.md)",
       "Bash(git push:*)",
