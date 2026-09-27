@@ -82,7 +82,9 @@ Everything is optional; defaults live in `lib/config.ps1`.
   "polishCap": 4, "maxProposalsPerNight": 5,
   "batch": { "maxTasks": 3, "maxTextLength": 240 },           // consecutive short tasks of one phase share a session
   "review": { "smallDiffLines": 300, "smallModel": "haiku" },  // diffs up to N changed lines get the cheap reviewer
-  "notesMaxLines": 60,                                         // report warns when NOTES.md grows past this
+  "notesMaxLines": 60,                                         // report warns when NOTES.md grows past this (it's inlined in every prompt)
+  "ruleSections": "(?i)\\brules\\b",                           // `## ` sections of the tasks file whose heading matches are inlined into {{PROJECT_RULES}}
+  "agentMaxBudgetUsd": 4,                                      // per-session cap (--max-budget-usd); 0 disables. The next attempt finishes the work
   "files": { "tasks": "TASKS.md", "backlog": "BACKLOG.md", "notes": "NOTES.md", "plan": "PLAN.md", "rules": ".nightshift/rules.md" },
 
   "gates": [                               // run in order after every attempt, by the supervisor itself
@@ -115,8 +117,9 @@ Everything is optional; defaults live in `lib/config.ps1`.
 
 **Prompts:** the defaults are in `prompts/`. To override one for a single project, copy it to
 `<project>/.nightshift/prompts/<name>.md`. Placeholders you can use: `{{TASK}} {{FEEDBACK}}
-{{VERIFY}} {{PROTECTED}} {{PROJECT_RULES}} {{TASKS_FILE}} {{BACKLOG_FILE}} {{NOTES_FILE}}
-{{PLAN_FILE}} {{BASE}}`.
+{{VERIFY}} {{PROTECTED}} {{PROJECT_RULES}} {{NOTES}} {{TASKS_FILE}} {{BACKLOG_FILE}} {{NOTES_FILE}}
+{{PLAN_FILE}} {{BASE}}`. `{{VERIFY}}` lists only the checks whose conditions hold now;
+`{{NOTES}}` is the notes file's content.
 
 ## Safety model
 

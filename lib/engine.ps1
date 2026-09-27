@@ -111,17 +111,29 @@ function Wait-Until([datetime]$Until) {
 
 # ---------------------------------------------------------------- prompts & agents
 
+# The project's rules file plus the tasks file's rule sections (config `ruleSections`), inlined
+# so agents never read the whole tasks file just to find them.
 function Get-ProjectRules {
+    $parts = @()
     $path = Join-Path $script:Repo $script:Config.files.rules
-    if (Test-Path $path) { return [IO.File]::ReadAllText($path).Trim() }
-    return '(none)'
+    if (Test-Path $path) { $parts += [IO.File]::ReadAllText($path).Trim() }
+    $sections = Get-MatchingSections $script:TasksPath $script:Config.ruleSections
+    if ($sections) { $parts += ($sections -replace '(?m)^## ', '### ') }
+    if (-not $parts) { return '(none)' }
+    return ($parts -join "`n`n")
+}
+
+# The notes file inlined (kept short by `notesMaxLines`): every session needs it, and reading it
+# as a tool call costs a turn plus the file again in every later turn's context.
+function Get-NotesText {
+    $path = Join-Path $script:Repo $script:Config.files.notes
+    if (-not (Test-Path $path)) { return '(none yet)' }
+    $text = [IO.File]::ReadAllText($path).Trim()
+    if ($text) { return $text } else { return '(none yet)' }
 }
 
 function Get-VerifyText {
-    $lines = foreach ($g in $script:Config.gates) {
-        $cond = if ($g.when) { " (when $(($g.when | ConvertTo-Json -Compress)))" } else { '' }
-        "- ``$($g.run)``$cond"
-    }
+    $lines = Get-ApplicableGateLines $script:Config.gates $script:Repo (Read-TaskList $script:TasksPath)
     if (-not $lines) { return '- (no automated checks configured)' }
     return ($lines -join "`n")
 }
@@ -159,6 +171,7 @@ function Expand-Template([string]$Name, [hashtable]$Values) {
         BASE          = $script:Base
         VERIFY        = Get-VerifyText
         PROJECT_RULES = Get-ProjectRules
+        NOTES         = Get-NotesText
         PHASE_CONTEXT = '(not applicable)'
     }
     foreach ($k in $common.Keys) { if (-not $Values.ContainsKey($k)) { $Values[$k] = $common[$k] } }
@@ -173,10 +186,15 @@ function Invoke-Agent([string]$Role, [string]$Prompt, [string]$Model, [switch]$R
 
     # Project settings only: user-level hooks (e.g. command-rewriting hooks, fact-forcing gates)
     # and plugins would defeat the project allowlist; no MCP servers keeps sessions lean.
-    $cli = "claude -p --output-format json --model $Model --setting-sources project,local --strict-mcp-config"
+    # --tools drops unused built-in tool definitions (Agent, Web*, Todo, ...) from every turn;
+    # --exclude-dynamic-system-prompt-sections keeps the system prompt identical across sessions
+    # so back-to-back sessions reuse its prompt cache instead of re-writing it.
+    $cli = "claude -p --output-format json --model $Model --setting-sources project,local --strict-mcp-config --exclude-dynamic-system-prompt-sections"
+    if ([double]$script:Config.agentMaxBudgetUsd -gt 0) { $cli += " --max-budget-usd $([double]$script:Config.agentMaxBudgetUsd)" }
     if ($ReadOnly) {
-        $cli += ' --permission-mode default --allowedTools "Read" "Grep" "Glob" --disallowedTools "Edit" "Write" "Bash" "PowerShell" "NotebookEdit"'
+        $cli += ' --tools "Read,Grep,Glob" --permission-mode default --allowedTools "Read" "Grep" "Glob" --disallowedTools "Edit" "Write" "Bash" "PowerShell" "NotebookEdit"'
     } else {
+        $cli += ' --tools "Bash,Read,Edit,Write,Grep,Glob"'
         # The tasks file is denied here, not in the shared project settings, so interactive
         # sessions can still maintain it. The supervisor also rejects diffs that touch it.
         $tasks = $script:Config.files.tasks
@@ -187,10 +205,12 @@ function Invoke-Agent([string]$Role, [string]$Prompt, [string]$Model, [switch]$R
 
     $raw = if (Test-Path $out) { [IO.File]::ReadAllText($out) } else { '' }
     $errText = if (Test-Path $err) { [IO.File]::ReadAllText($err) } else { '' }
-    $result = $raw; $isError = ($code -ne 0); $cost = 0.0
+    $result = $raw; $isError = ($code -ne 0); $cost = 0.0; $overBudget = $false
     try {
         $json = $raw | ConvertFrom-Json
         $result = [string]$json.result
+        # Hit agentMaxBudgetUsd: the work so far is on the branch; checks/fixer take it from there.
+        if ([string]$json.subtype -match 'budget') { $overBudget = $true; Write-Log "agent $Role stopped at its budget cap" }
         if ($json.is_error) { $isError = $true }
         if ($json.total_cost_usd) { $cost = [double]$json.total_cost_usd }
     } catch { }
@@ -199,13 +219,14 @@ function Invoke-Agent([string]$Role, [string]$Prompt, [string]$Model, [switch]$R
     }
     $script:Stats.Cost += $cost
     $all = "$result`n$errText`n$raw"
-    $limit = $isError -and (Test-LimitHit $all)
+    $limit = $isError -and -not $overBudget -and (Test-LimitHit $all)
     return [pscustomobject]@{
         ExitCode  = $code
         TimedOut  = ($code -eq -1)
+        OverBudget = $overBudget
         IsError   = $isError
         LimitHit  = $limit
-        Transient = ($isError -and -not $limit -and (Test-TransientError $all))
+        Transient = ($isError -and -not $limit -and -not $overBudget -and (Test-TransientError $all))
         Result    = $result
         ErrorText = $errText
         Log       = $base
@@ -497,6 +518,8 @@ function Invoke-WorkItem($Item) {
         }
         if ($r.TimedOut) {
             $feedback = "The previous session timed out after $($script:Config.agentTimeoutMinutes) minutes. Finish the remaining work with the smallest change that satisfies the task."
+        } elseif ($r.OverBudget) {
+            $feedback = 'The previous session hit its token budget before finishing. Finish the remaining work with the smallest change that satisfies the task; read only what you need.'
         }
         if (Test-TreeDirty) { New-Commit "chore($($Item.Id)): uncommitted agent changes" | Out-Null }
 

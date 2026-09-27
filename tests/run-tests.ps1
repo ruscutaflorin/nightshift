@@ -192,6 +192,19 @@ try {
     Assert-Equal '' (Get-PhaseSection $batchFile '9') 'unknown phase -> empty'
     Assert-Equal $true ((Get-PhaseSection $batchFile '3') -notmatch 'Phase 4') 'phase 3 does not bleed into phase 4'
 
+    $rules = Get-MatchingSections $batchFile '(?i)\brules\b'
+    Assert-Equal "## Rules`n- A.1 not a task" $rules 'rule sections extracted, phases left out'
+    Assert-Equal '' (Get-MatchingSections $batchFile '') 'no heading pattern -> empty'
+    Assert-Equal '' (Get-MatchingSections (Join-Path $tmp 'missing.md') 'x') 'missing file -> empty'
+
+    $gl = Get-ApplicableGateLines (@(
+        '{"name":"test","run":"flutter test","when":{"fileExists":"pubspec.yaml"}}',
+        '{"name":"cov","run":"dart run cov.dart","when":{"taskDone":"1.2"}}',
+        '{"name":"db","run":"supabase test db","when":{"changed":"supabase/*"}}',
+        '{"name":"fmt","run":"dart format ."}'
+    ) | ConvertFrom-Json) $tmp $tl
+    Assert-Equal "- ``flutter test``|- ``supabase test db`` (only if you change supabase/*)|- ``dart format .``" ($gl -join '|') 'verify list: static conditions filtered, changed becomes a hint'
+
     Assert-Equal 'The reviewer requested changes: a.json:3 - near-duplicate - replace it' (Get-ShortReason "The reviewer requested changes:`n- a.json:3 - near-duplicate - replace it`n- b.json:1 - x") 'short reason names the first reviewer issue'
     Assert-Equal "Check 'test' failed, exit code 1. -> 00:05 +40 -2: Some tests failed." (Get-ShortReason "Check 'test' failed, exit code 1. Last lines:`n``````n00:01 +3: loading`n00:05 +40 -2: Some tests failed.`n``````") 'short reason for a check keeps the last output line'
     Assert-Equal 'BLOCKED-ish plain line' (Get-ShortReason 'BLOCKED-ish plain line') 'plain one-liner unchanged'

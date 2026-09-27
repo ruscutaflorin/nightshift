@@ -17,6 +17,8 @@ $script:DefaultConfigJson = @'
   "batch": { "maxTasks": 3, "maxTextLength": 240 },
   "review": { "smallDiffLines": 300, "smallModel": "haiku" },
   "notesMaxLines": 60,
+  "ruleSections": "(?i)\\brules\\b",
+  "agentMaxBudgetUsd": 4,
   "files": { "tasks": "TASKS.md", "backlog": "BACKLOG.md", "notes": "NOTES.md", "plan": "PLAN.md", "rules": ".nightshift/rules.md" },
   "gates": [],
   "services": {},

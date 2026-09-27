@@ -83,6 +83,25 @@ function Test-GateCondition($When, [string]$Repo, [string[]]$ChangedPaths, $Task
     return $true
 }
 
+# The checks an agent must make pass, as plain commands: gates whose static conditions
+# (fileExists, taskDone) fail right now are left out; a `changed` condition becomes a hint.
+function Get-ApplicableGateLines($Gates, [string]$Repo, $Tasks) {
+    $lines = foreach ($g in @($Gates)) {
+        if (-not $g) { continue }
+        $static = $null; $changed = $null
+        if ($g.when) {
+            $static = [pscustomobject]@{}
+            foreach ($p in $g.when.PSObject.Properties) {
+                if ($p.Name -eq 'changed') { $changed = @($p.Value) -join ', ' }
+                else { $static | Add-Member -NotePropertyName $p.Name -NotePropertyValue $p.Value }
+            }
+        }
+        if (-not (Test-GateCondition $static $Repo @() $Tasks)) { continue }
+        if ($changed) { "- ``$($g.run)`` (only if you change $changed)" } else { "- ``$($g.run)``" }
+    }
+    return @($lines)
+}
+
 # Extract the reviewer's verdict from its final message: the last single-line JSON object
 # containing "verdict" (the reviewer prompt asks for exactly that). Returns $null if absent/invalid.
 function Get-ReviewVerdict([string]$Text) {

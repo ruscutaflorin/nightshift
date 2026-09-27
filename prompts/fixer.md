@@ -16,11 +16,16 @@ A previous attempt at this task was rejected. You are on the same branch, with i
 
 ## How to work (keep context lean)
 
-1. `CLAUDE.md` is already loaded; don't re-read it. Inspect what the previous attempt did: `git log --oneline {{BASE}}..HEAD` and `git diff --stat {{BASE}}...HEAD`, then read only the files the feedback points at.
+1. `CLAUDE.md`, the project rules and notes below are already loaded; don't re-read them, and don't open `{{TASKS_FILE}}`. Inspect what the previous attempt did: `git log --oneline {{BASE}}..HEAD` and `git diff --stat {{BASE}}...HEAD`, then read only the files (or the parts of them) the feedback points at.
 2. Fix exactly the problems above. Keep what was good. Stay within the task's scope.
-3. Make these checks pass:
+3. Your shell already starts in the repo root — don't `cd`. Make independent tool calls together in one turn. While iterating, run only the affected tests; run the full checks once at the end:
 {{VERIFY}}
 4. Commit with a conventional message naming the task id, e.g. `fix(3.4): handle neutral hue`. Do not switch branches, merge, rebase, reset or push.
+5. Nobody reads your prose: skip narration; only the final line is parsed.
+
+## Notes from earlier sessions (`{{NOTES_FILE}}`)
+
+{{NOTES}}
 
 ## Project rules
 

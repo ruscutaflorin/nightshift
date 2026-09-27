@@ -92,6 +92,19 @@ function Get-PhaseSection([string]$Path, [string]$Phase) {
     return (($out -join "`n").Trim())
 }
 
+# Every `## ` section whose heading matches $HeadingPattern, in file order (e.g. the rules
+# appendix of the tasks file, so agents get it in their prompt instead of reading the whole file).
+function Get-MatchingSections([string]$Path, [string]$HeadingPattern) {
+    if (-not $HeadingPattern -or -not (Test-Path $Path)) { return '' }
+    $out = New-Object System.Collections.ArrayList
+    $inside = $false
+    foreach ($line in (Read-TextFile $Path).Lines) {
+        if ($line -match '^## ') { $inside = ($line -match $HeadingPattern) }
+        if ($inside) { [void]$out.Add($line) }
+    }
+    return (($out -join "`n").Trim())
+}
+
 function Get-NextBacklogTask($Tasks, [string[]]$SkipIds = @()) {
     foreach ($t in $Tasks) {
         if ($t.Id -notmatch '^B\d+$' -or $t.Status -ne ' ') { continue }
