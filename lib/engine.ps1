@@ -100,6 +100,25 @@ function Add-Report([string]$Line) {
 
 function Stop-Night([string]$Reason) { throw "STOP_NIGHT: $Reason" }
 
+# Clicking into a console window starts a QuickEdit selection, which freezes every write to that
+# console until the selection ends, and with it a daemon that logs to the window. Turned off for
+# the daemon's own window.
+function Disable-ConsoleQuickEdit {
+    try {
+        Add-Type -Namespace NightShift -Name ConsoleMode -ErrorAction SilentlyContinue -MemberDefinition @'
+[DllImport("kernel32.dll")] public static extern IntPtr GetStdHandle(int handle);
+[DllImport("kernel32.dll")] public static extern bool GetConsoleMode(IntPtr handle, out uint mode);
+[DllImport("kernel32.dll")] public static extern bool SetConsoleMode(IntPtr handle, uint mode);
+'@
+        $h = [NightShift.ConsoleMode]::GetStdHandle(-10)   # STD_INPUT_HANDLE
+        $mode = [uint32]0
+        if ([NightShift.ConsoleMode]::GetConsoleMode($h, [ref]$mode)) {
+            # clear ENABLE_QUICK_EDIT_MODE (0x40); ENABLE_EXTENDED_FLAGS (0x80) makes the change stick
+            [void][NightShift.ConsoleMode]::SetConsoleMode($h, [uint32](($mode -band -65) -bor 0x80))
+        }
+    } catch { }
+}
+
 function Assert-NotStopped { if (Test-Path $script:StopFile) { Stop-Night 'stopped on request (STOP file)' } }
 
 function Get-Stamp { return (Get-Date -Format 'yyyyMMdd-HHmmss') }

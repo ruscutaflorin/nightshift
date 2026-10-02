@@ -235,8 +235,12 @@ function Select-WorkJobs([int]$Free) {
         if ($jobs.Count -ge $Free) { break }
         [void]$jobs.Add((New-WorkJob (New-TaskItem $b.Tasks 'task') $b.Lane))
     }
-    if ($jobs.Count -lt $Free -and (Test-Path $script:BacklogPath)) {
+    $backlogWaiting = $false
+    if (Test-Path $script:BacklogPath) {
         $backlog = Merge-TaskOverlay (Read-TaskList $script:BacklogPath) $overlay
+        $backlogWaiting = [bool](@($backlog | Where-Object { $_.Id -match '^B\d+$' -and $_.Status -eq ' ' -and $_.Text -match 'status:\s*approved' }))
+    }
+    if ($jobs.Count -lt $Free -and (Test-Path $script:BacklogPath)) {
         foreach ($t in (Get-BacklogLaneItems $backlog $busy)) {
             if ($jobs.Count -ge $Free) { break }
             $item = New-TaskItem @($t) 'backlog'; $item.Phase = 'backlog'
@@ -244,6 +248,11 @@ function Select-WorkJobs([int]$Free) {
         }
     }
     if ($jobs.Count -gt 0) { return , $jobs.ToArray() }
+    # New work (product, polish) only once the plan itself is exhausted: while planned tasks are
+    # merely waiting for their lane, a free worker stays free rather than inventing extra features
+    # that compete with the plan for quota and files.
+    $waiting = @($tasks | Where-Object { $_.Status -eq ' ' -and $_.Id -match $script:TaskIdPattern })
+    if ($waiting -or $backlogWaiting) { return , $jobs.ToArray() }
 
     $daily = Get-DailyState
     $p = $script:Config.product
@@ -795,6 +804,23 @@ function Stop-OrphanWorkers {
         Remove-Item $f.FullName -ErrorAction SilentlyContinue
     }
     Get-ChildItem $script:ResultsDir -File -ErrorAction SilentlyContinue | Remove-Item -ErrorAction SilentlyContinue
+    # A killed worker leaves its branch checked out in its slot, and git won't check a branch out
+    # in two worktrees: keep any leftovers as a WIP commit and detach, so the branch can be resumed
+    # from any slot.
+    $root = Get-WorktreeRoot
+    foreach ($dir in @(Get-ChildItem $root -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne 'integrate' })) {
+        if (-not (Test-Path (Join-Path $dir.FullName '.git'))) { continue }
+        $branch = Get-CurrentBranch $dir.FullName
+        if (-not $branch) { continue }
+        Set-WorkDir $dir.FullName
+        try {
+            if (Get-GitSha 'MERGE_HEAD') { Invoke-Git 'merge --abort' -AllowFail | Out-Null }
+            if (Test-TreeDirty) { New-Commit 'wip: state left by an interrupted worker' | Out-Null }
+            Invoke-Git 'switch -q --detach' -AllowFail | Out-Null
+            Write-Log "released $branch from $($dir.Name)"
+        } catch { Write-Log "could not release $branch from $($dir.Name): $($_.Exception.Message)" }
+    }
+    Set-WorkDir $script:ProjectHome
 }
 
 function Write-Summary {
@@ -845,6 +871,7 @@ function Start-Daemon([switch]$Once, [string]$Task, [switch]$UrgentOnly) {
     if ($running) { Write-Host "Night Shift is already running for $($script:Config.name) (PID $running)."; return 0 }
     [IO.File]::WriteAllText($script:LockFile, "$PID", $script:Utf8)
     if (Test-Path $script:StopFile) { Remove-Item $script:StopFile -Force }
+    Disable-ConsoleQuickEdit
 
     Add-Type -Namespace NightShift -Name Power -MemberDefinition '[DllImport("kernel32.dll")] public static extern uint SetThreadExecutionState(uint esFlags);' -ErrorAction SilentlyContinue
     [NightShift.Power]::SetThreadExecutionState([uint32]2147483649) | Out-Null  # ES_CONTINUOUS | ES_SYSTEM_REQUIRED
