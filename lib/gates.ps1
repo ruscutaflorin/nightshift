@@ -121,6 +121,50 @@ function Get-ReviewVerdict([string]$Text) {
     return $null
 }
 
+# Extract the resolver's outcome: the last single-line JSON object containing "diagnosis".
+# "human" may be {"ask":"..."} or a plain string; anything else is defaulted (did @(), retry
+# $false, human/hint ''). $null if absent/invalid.
+function Get-ResolverOutcome([string]$Text) {
+    if (-not $Text) { return $null }
+    $lines = @($Text -split "`r?`n")
+    for ($i = $lines.Count - 1; $i -ge 0; $i--) {
+        $line = $lines[$i].Trim().Trim('`').Trim()
+        if (-not ($line.StartsWith('{') -and $line -match '"diagnosis"')) { continue }
+        try { $obj = $line | ConvertFrom-Json } catch { continue }
+        if (-not ($obj -is [pscustomobject])) { continue }
+        $human = ''
+        if ($obj.human -is [pscustomobject]) { $human = [string]$obj.human.ask } elseif ($obj.human) { $human = [string]$obj.human }
+        return [pscustomobject]@{
+            diagnosis = [string]$obj.diagnosis
+            did       = @($obj.did | Where-Object { $_ } | ForEach-Object { [string]$_ })
+            retry     = ($obj.retry -eq $true)
+            human     = $human.Trim()
+            hint      = [string]$obj.hint
+        }
+    }
+    return $null
+}
+
 function Test-TaskDone($Tasks, [string]$Id) {
     return [bool]($Tasks | Where-Object { $_.Id -eq $Id -and $_.Status -eq 'x' })
+}
+
+# Extract the planner's phase plan: the last single-line JSON object containing "phases".
+# Returns a hashtable phase -> [string[]] after-phases, or $null if absent/invalid.
+function Get-PhasePlan([string]$Text) {
+    if (-not $Text) { return $null }
+    $lines = @($Text -split "`r?`n")
+    for ($i = $lines.Count - 1; $i -ge 0; $i--) {
+        $line = $lines[$i].Trim().Trim('`').Trim()
+        if (-not ($line.StartsWith('{') -and $line -match '"phases"')) { continue }
+        try { $obj = $line | ConvertFrom-Json } catch { continue }
+        if (-not ($obj.phases -is [pscustomobject])) { continue }
+        $plan = @{}
+        foreach ($p in $obj.phases.PSObject.Properties) {
+            if ($p.Name -notmatch '^\d+$') { continue }
+            $plan[$p.Name] = @(@($p.Value.after) | Where-Object { "$_" -match '^\d+$' -and "$_" -ne $p.Name } | ForEach-Object { "$_" })
+        }
+        return $plan
+    }
+    return $null
 }

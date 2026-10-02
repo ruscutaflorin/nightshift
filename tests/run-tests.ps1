@@ -7,6 +7,7 @@ $lib = Join-Path (Split-Path $PSScriptRoot -Parent) 'lib'
 . (Join-Path $lib 'limits.ps1')
 . (Join-Path $lib 'gates.ps1')
 . (Join-Path $lib 'config.ps1')
+. (Join-Path $lib 'guard.ps1')
 
 $script:Failures = 0
 $script:Count = 0
@@ -83,8 +84,36 @@ try {
     Assert-Equal 'B1 B2 B3' (($backlog | ForEach-Object { $_.Id }) -join ' ') 'ignores example lines inside code fences'
     Assert-Equal 'B2' (Get-NextBacklogTask $backlog).Id 'picks approved backlog item only'
     Assert-Equal 'B4' (Get-NextBacklogId $backlog) 'next backlog id'
+    Assert-Equal "- [ ] B1 Proposed thing - status: proposed`n  - Why: x" (Get-BacklogItemBlock $backlogFile 'B1') 'backlog block includes indented detail lines'
+    Assert-Equal '- [ ] B2 Approved thing - status: approved' (Get-BacklogItemBlock $backlogFile 'B2') 'backlog block stops at the next item'
     Set-TaskStatus $backlogFile 'B2' 'x'
     Assert-Equal $true ([IO.File]::ReadAllText($backlogFile) -match '- \[x\] B2 Approved thing - status: done') 'done backlog item flips status text'
+
+    # Product round guardrails: existing items restored, approvals limited by size and count.
+    $productFile = Join-Path $tmp 'BACKLOG-product.md'
+    $orig = @('- [ ] B1 Old idea - status: proposed', '  - Size: S')
+    [IO.File]::WriteAllText($productFile, ($orig -join "`n"), (New-Object Text.UTF8Encoding($false)))
+    $before = Get-BacklogLineMap (Read-TaskList $productFile)
+    $agent = @(
+        '- [ ] B1 Old idea - status: approved', '  - Size: S',
+        '- [ ] B2 Small - status: approved', '  - Why: y', '  - Size: S',
+        '- [ ] B3 Large - status: approved', '  - Size: L (split first)',
+        '- [ ] B4 Medium - status: approved', '  - Size: M',
+        '- [ ] B5 Over the cap - status: approved', '  - Size: S',
+        '- [ ] B6 Plain proposal - status: proposed', '  - Size: S'
+    )
+    [IO.File]::WriteAllText($productFile, ($agent -join "`n"), (New-Object Text.UTF8Encoding($false)))
+    $kept = Limit-ProductApprovals $productFile $before $true 2
+    Assert-Equal 'B2 B4' ($kept -join ' ') 'auto-approve keeps S/M items up to the cap'
+    $status = @{}
+    foreach ($t in (Read-TaskList $productFile)) { $status[$t.Id] = $t.Text }
+    Assert-Equal 'Old idea - status: proposed' $status['B1'] 'existing item line restored'
+    Assert-Equal 'Large - status: proposed' $status['B3'] 'size L demoted to proposed'
+    Assert-Equal 'Over the cap - status: proposed' $status['B5'] 'approvals over the cap demoted'
+    [IO.File]::WriteAllText($productFile, ($agent -join "`n"), (New-Object Text.UTF8Encoding($false)))
+    $kept = Limit-ProductApprovals $productFile $before $false 2
+    Assert-Equal '' ($kept -join ' ') 'without auto-approve nothing stays approved'
+    Assert-Equal $false ([IO.File]::ReadAllText($productFile) -match 'status: approved') 'every approval demoted when auto-approve is off'
 
     # ---------------------------------------------------------- limits.ps1
     $now = [datetime]'2026-09-27 23:40'
@@ -134,7 +163,15 @@ try {
     Assert-Equal '' "$(Get-ReviewVerdict 'no json here')" 'missing verdict -> null'
     Assert-Equal '' "$(Get-ReviewVerdict '{"verdict":"maybe"}')" 'invalid verdict value -> null'
 
-    Assert-Equal 7 (Get-PassedTestCount 'Tests:       1 failed, 7 passed, 8 total' 'Tests:\s+(?:\d+ \w+, )*(\d+) passed') 'custom pattern (jest)'
+    $o = Get-ResolverOutcome "Looked around.`n{`"diagnosis`":`"old`"}`nThen:`n``{`"diagnosis`":`"stale temp`",`"did`":[`"deleted supabase/.temp`"],`"retry`":true,`"human`":null,`"hint`":`"h`"}``"
+    Assert-Equal 'stale temp|1|deleted supabase/.temp|True||h' "$($o.diagnosis)|$(@($o.did).Count)|$($o.did[0])|$($o.retry)|$($o.human)|$($o.hint)" 'reads last resolver outcome inside backticks'
+    $o = Get-ResolverOutcome '{"diagnosis":"needs a Stripe key","retry":false,"human":{"ask":"Create a Stripe test account"}}'
+    Assert-Equal 'False|Create a Stripe test account|0' "$($o.retry)|$($o.human)|$(@($o.did).Count)" 'resolver outcome: human ask object, defaults'
+    Assert-Equal 'Put the key in .env' (Get-ResolverOutcome '{"diagnosis":"x","human":"Put the key in .env"}').human 'resolver outcome: human ask string'
+    Assert-Equal '' "$(Get-ResolverOutcome 'no outcome {diagnosis}')" 'missing resolver outcome -> null'
+    Assert-Equal 'False' "$((Get-ResolverOutcome '{"diagnosis":"x","retry":"yes"}').retry)" 'retry must be literally true'
+
+    Assert-Equal 7 (Get-PassedTestCount 'Tests:      1 failed, 7 passed, 8 total' 'Tests:\s+(?:\d+ \w+, )*(\d+) passed') 'custom pattern (jest)'
     Assert-Equal 12 (Get-PassedTestCount '===== 12 passed in 0.31s =====' '(\d+) passed') 'custom pattern (pytest)'
 
     New-Item -ItemType Directory -Force (Join-Path $tmp 'test') | Out-Null
@@ -216,6 +253,116 @@ try {
     Assert-Equal '2.3a' (Get-NextTask $sl).Id 'letter-suffixed ids are real tasks'
     Assert-Equal '2.3a 2.3b' ((Get-NextTaskBatch $sl 2 240 @() | ForEach-Object { $_.Id }) -join ' ') 'letter-suffixed ids batch normally'
 
+    # ---------------------------------------------------------- lanes + overlay
+    $laneFile = Join-Path $tmp 'LANES.md'
+    $lt = @(
+        '## Phase 1 - Base', '',
+        '- [x] 1.1 done',
+        '- [ ] 1.2 open a',
+        '- [ ] 1.3 open b', '',
+        '## Phase 2 - Next', '',
+        '- [ ] 2.1 open c', '',
+        '## Phase 3 - Side work (parallel)', '',
+        '- [ ] 3.1 side a',
+        '- [ ] 3.2 side b', '',
+        '## Phase 4 - After base (after 1)', '',
+        '- [ ] 4.1 waits for phase 1'
+    ) -join "`n"
+    [IO.File]::WriteAllText($laneFile, $lt, (New-Object Text.UTF8Encoding($false)))
+    $lTasks = Read-TaskList $laneFile
+    $flags = Get-PhaseFlags $laneFile
+    Assert-Equal 'False True 1' "$($flags['1'].Parallel) $($flags['3'].Parallel) $(@($flags['4'].After) -join ',')" 'phase flags: (parallel) and (after N)'
+    $fmt = { param($b) ($b | ForEach-Object { "$($_.Lane)=$(($_.Tasks | ForEach-Object { $_.Id }) -join '+')" }) -join ' ' }
+    Assert-Equal 'tasks=1.2 phase:3=3.1' (& $fmt (Get-TaskLaneBatches $lTasks $flags @() $false 1 240 @())) 'sequential lane + parallel phase; (after 1) waits'
+    Assert-Equal 'phase:3=3.1+3.2' (& $fmt (Get-TaskLaneBatches $lTasks $flags @('tasks') $false 2 240 @())) 'busy lane skipped; batching inside a lane'
+    Assert-Equal 'phase:1 phase:2 phase:3' ((Get-TaskLaneBatches $lTasks $flags @() $true 1 240 @() | ForEach-Object { $_.Lane }) -join ' ') 'all-parallel: one lane per phase, after-phase still waits'
+
+    $ov = @{ '1.2' = [pscustomobject]@{ state = 'failed'; text = 'open a' }; '1.3' = [pscustomobject]@{ state = 'human'; text = 'changed text' } }
+    $merged = Merge-TaskOverlay $lTasks $ov
+    Assert-Equal '! ' "$(($merged | Where-Object Id -eq '1.2').Status)$(($merged | Where-Object Id -eq '1.3').Status)" 'overlay applies while text matches; rewritten task drops it'
+    $lb = Get-TaskLaneBatches $merged $flags @() $false 1 240 @()
+    Assert-Equal 'tasks=2.1' (& $fmt @($lb | Where-Object Lane -eq 'tasks')) 'failed overlay blocks the rest of its phase, next phase proceeds'
+    $failedLine = @([pscustomobject]@{ Id = '5.1'; Status = '!'; Text = 'x'; Phase = '5'; Line = 0 })
+    Assert-Equal ' ' (Merge-TaskOverlay $failedLine @{ '5.1' = [pscustomobject]@{ state = 'open' } })[0].Status 'open overlay reopens a [!] line'
+    $doneLine = @([pscustomobject]@{ Id = '5.2'; Status = 'x'; Text = 't'; Phase = '5'; Line = 0 })
+    Assert-Equal 'x' (Merge-TaskOverlay $doneLine @{ '5.2' = [pscustomobject]@{ state = 'failed' } })[0].Status 'done tasks ignore the overlay'
+    $bl3 = @(
+        [pscustomobject]@{ Id = 'B7'; Status = ' '; Text = 'a - status: approved' },
+        [pscustomobject]@{ Id = 'B8'; Status = ' '; Text = 'b - status: approved' },
+        [pscustomobject]@{ Id = 'B9'; Status = ' '; Text = 'c - status: proposed' })
+    Assert-Equal 'B8' ((Get-BacklogLaneItems $bl3 @('backlog:B7') | ForEach-Object { $_.Id }) -join ' ') 'backlog lanes: approved, not busy'
+
+    $pp = Get-PhasePlan "thinking`n{`"phases`":{`"2`":{`"after`":[`"1`"]},`"3`":{`"after`":[]},`"x`":{},`"4`":{`"after`":[`"4`",`"oops`"]}}}"
+    Assert-Equal '1||' "$(@($pp['2']) -join ',')|$(@($pp['3']) -join ',')|$(@($pp['4']) -join ',')" 'phase plan parsed; self and junk deps dropped'
+    Assert-Equal '' "$(Get-PhasePlan 'no plan')" 'missing phase plan -> null'
+    Assert-Equal '1 2 3 4' ((Get-OpenPhaseIds $lTasks) -join ' ') 'open phases in file order'
+    $mf = Merge-PhasePlan $flags @{ '1' = @(); '2' = @('1'); '3' = @('1'); '4' = @() }
+    Assert-Equal 'True|False 1|True|1' "$($mf['1'].Parallel)|$($mf['2'].Parallel) $(@($mf['2'].After) -join ',')|$($mf['3'].Parallel)|$(@($mf['4'].After) -join ',')" 'planner fills lanes; heading flags win'
+    $lb = Get-TaskLaneBatches $lTasks $mf @() $false 1 240 @()
+    Assert-Equal 'phase:1=1.2 phase:3=3.1' (& $fmt $lb) 'planned lanes: independent phases run, dependent ones wait'
+
+    # ---------------------------------------------------------- active hours + limit resume
+    Assert-Equal $true (Test-InActiveHours @() ([datetime]'2026-10-01 13:00')) 'no windows = always active'
+    Assert-Equal $true (Test-InActiveHours @('22:00-07:00') ([datetime]'2026-10-01 02:00')) 'window across midnight'
+    Assert-Equal $false (Test-InActiveHours @('22:00-07:00') ([datetime]'2026-10-01 12:00')) 'outside window'
+    Assert-Equal $true (Test-InActiveHours @('09:00-12:00', '13:00-18:00') ([datetime]'2026-10-01 14:00')) 'second window'
+    Assert-Equal ([datetime]'2026-10-01 22:00') (Get-NextActiveStart @('22:00-07:00') ([datetime]'2026-10-01 12:00')) 'next window start today'
+    Assert-Equal ([datetime]'2026-10-02 09:00') (Get-NextActiveStart @('09:00-12:00') ([datetime]'2026-10-01 12:30')) 'next window start tomorrow'
+    $threw = $false; try { Test-InActiveHours @('soon') (Get-Date) | Out-Null } catch { $threw = $true }
+    Assert-Equal $true $threw 'bad window throws'
+    $noon = [datetime]'2026-10-01 12:00'
+    $d = Get-LimitDecision ([datetime]'2026-10-01 15:00') ([datetime]::MaxValue) $noon 30 ''
+    Assert-Equal 'sleep 2026-10-01 15:02 False' "$($d.Action) $($d.Until.ToString('yyyy-MM-dd HH:mm')) $($d.Probe)" 'no deadline: sleep until the reset'
+    $d = Get-LimitDecision ([datetime]'2026-10-01 15:00') ([datetime]::MaxValue) $noon 30 '22:00'
+    Assert-Equal '2026-10-01 22:00' $d.Until.ToString('yyyy-MM-dd HH:mm') 'resumeAt: wake at the chosen hour after the reset'
+    $d = Get-LimitDecision ([datetime]'2026-10-01 23:00') ([datetime]::MaxValue) $noon 30 '22:00'
+    Assert-Equal '2026-10-02 22:00' $d.Until.ToString('yyyy-MM-dd HH:mm') 'resumeAt before the reset rolls to the next day'
+    $d = Get-LimitDecision $null ([datetime]::MaxValue) $noon 30 ''
+    Assert-Equal '12:30 True' "$($d.Until.ToString('HH:mm')) $($d.Probe)" 'unknown reset: fallback sleep, then probe'
+
+    # ---------------------------------------------------------- guard.ps1
+    $repoRoot = Join-Path $tmp 'repo'
+    $wtRoot = Join-Path $tmp 'repo.nightshift'
+    $roots = @($repoRoot, $wtRoot)
+    $cwd = Join-Path $wtRoot 'resolver'
+    $branches = @('main', 'master', 'develop')
+    $cmdRd = 'rd ' + '/s /q '
+    $blocked = @(
+        'git push --force origin ns/x', 'git push -f', 'git push origin +HEAD:develop', 'git push origin main', 'git push origin HEAD:main',
+        'git push origin --delete develop', 'git reset --hard HEAD~3', 'git filter-branch --all', 'git branch -D develop', 'git update-ref refs/heads/main abc',
+        'git worktree remove ../w1', 'gh repo delete me/x --yes', 'gh secret set X', 'gh api -X DELETE repos/me/x',
+        'rm -rf /c/Users', 'rm -rf ~', 'rm -rf ../../outside', 'Remove-Item -Recurse -Force C:\Windows\Temp\x', ($cmdRd + 'D:\other'),
+        'cat ~/.ssh/id_rsa', 'type %USERPROFILE%\.claude.json', 'shutdown /s /t 0', 'format d: /q', 'npm test && git push --force'
+    )
+    foreach ($c in $blocked) {
+        Assert-Equal $true ([bool](Get-GuardVerdict 'Bash' ([pscustomobject]@{ command = $c }) $cwd $roots $branches)) "guard blocks: $c"
+    }
+    $allowed = @(
+        'git push -u origin ns/1.2-20261001-1200', 'git commit -m "fix main menu"', 'git push origin feature/main-menu', 'npm install -g pnpm',
+        'docker run -d --name pg -p 5432:5432 postgres:16', 'rm -rf supabase/.temp', 'rm -rf node_modules', "Remove-Item -Recurse -Force $cwd\build",
+        ($cmdRd + 'build'), 'dart format .', 'winget install --id Git.Git -e', 'git branch -D ns/old-branch', 'rm -rf *'
+    )
+    foreach ($c in $allowed) {
+        Assert-Equal '' (Get-GuardVerdict 'Bash' ([pscustomobject]@{ command = $c }) $cwd $roots $branches) "guard allows: $c"
+    }
+    Assert-Equal $true ([bool](Get-GuardVerdict 'Edit' ([pscustomobject]@{ file_path = "$env:USERPROFILE\.claude\settings.json" }) $cwd $roots $branches)) 'guard blocks editing user settings'
+    Assert-Equal $true ([bool](Get-GuardVerdict 'Read' ([pscustomobject]@{ file_path = "$env:USERPROFILE\.ssh\id_ed25519" }) $cwd $roots $branches)) 'guard blocks reading keys'
+    Assert-Equal '' (Get-GuardVerdict 'Edit' ([pscustomobject]@{ file_path = "$cwd\CLAUDE.md" }) $cwd $roots $branches) 'guard allows editing CLAUDE.md in its worktree'
+    Assert-Equal '' (Get-GuardVerdict 'Write' ([pscustomobject]@{ file_path = "$repoRoot\.claude\settings.json" }) $cwd $roots $branches) 'guard allows editing the project settings'
+    Assert-Equal '' (Get-GuardVerdict 'Read' ([pscustomobject]@{ file_path = 'C:\Program Files\x\readme.txt' }) $cwd $roots $branches) 'guard allows reading elsewhere'
+
+    # ---------------------------------------------------------- settings
+    $projSettings = '{"permissions":{"allow":["Bash(flutter:*)"],"deny":["Bash(rm -rf:*)"]}}' | ConvertFrom-Json
+    $as = New-AgentSettings $projSettings 'docs/TASKS.md'
+    Assert-Equal 'True True True True' "$($as.permissions.allow -contains 'Bash(flutter:*)') $($as.permissions.deny -contains 'Bash(rm -rf:*)') $($as.permissions.deny -contains 'Bash(git push:*)') $($as.permissions.deny -contains 'Edit(docs/TASKS.md)')" 'agent settings: project policy + engine denies + tasks file'
+    $old = '{"permissions":{"allow":["Read","Bash(flutter:*)"],"deny":["Edit(.nightshift/**)","Edit(CLAUDE.md)","PowerShell","Bash(git push:*)","Bash(custom-thing:*)"]},"env":{"X":"1"}}' | ConvertFrom-Json
+    $hs = ConvertTo-HumanSettings $old @('Bash(git push:*)') @('Bash(dart:*)')
+    Assert-Equal 'Bash(custom-thing:*)' (@($hs.permissions.deny | Where-Object { $script:HumanDeny -notcontains $_ }) -join ',') 'human settings: agent-only denies removed, own denies kept'
+    Assert-Equal 'True True True acceptEdits 1' "$($hs.permissions.allow -contains 'PowerShell') $($hs.permissions.allow -contains 'Bash(dart:*)') $($hs.permissions.allow -contains 'Bash(flutter:*)') $($hs.permissions.defaultMode) $($hs.env.X)" 'human settings: allowlist added, rest kept'
+    Assert-Equal 'True' "$($old.permissions.deny -contains 'PowerShell')" 'human settings conversion leaves its input alone'
+    $rs = New-ResolverSettings 'powershell -File guard.ps1'
+    Assert-Equal 'True powershell -File guard.ps1' "$($rs.permissions.deny -contains 'Bash(git push --force:*)') $($rs.hooks.PreToolUse[0].hooks[0].command)" 'resolver settings: denies + guard hook'
+
     # ---------------------------------------------------------- config.ps1
     $base = '{"a":1,"models":{"builder":"sonnet","reviewer":"sonnet"},"gates":[1,2]}' | ConvertFrom-Json
     $over = '{"models":{"builder":"opus"},"gates":[3],"extra":true}' | ConvertFrom-Json
@@ -241,7 +388,10 @@ try {
     [IO.File]::WriteAllText((Join-Path $tmp 'proj\.nightshift\config.json'), '{"models":{"builder":"haiku"}}')
     Assert-Equal (Join-Path $tmp 'proj') (Find-ProjectRoot $proj) 'finds project root walking up'
     $rc = Read-ProjectConfig (Join-Path $tmp 'proj')
-    Assert-Equal 'proj haiku opus develop' "$($rc.name) $($rc.models.builder) $($rc.models.escalate) $($rc.baseBranch)" 'project config merged over defaults'
+    Assert-Equal 'proj haiku opus develop 2 opus' "$($rc.name) $($rc.models.builder) $($rc.models.escalate) $($rc.baseBranch) $($rc.workers) $($rc.models.resolver)" 'project config merged over defaults'
+    [IO.File]::WriteAllText((Join-Path $tmp 'proj\.nightshift\config.json'), '{"maxProposalsPerNight":2,"unblock":{"enabled":false}}')
+    $rc = Read-ProjectConfig (Join-Path $tmp 'proj')
+    Assert-Equal '2 False' "$($rc.product.maxProposals) $($rc.resolver.enabled)" 'old config keys still honored'
 } finally {
     Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
 }

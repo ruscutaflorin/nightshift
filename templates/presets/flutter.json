@@ -1,17 +1,65 @@
 {
   "config": {
     "baseBranch": "develop",
-    "stopAt": "07:00",
     "gates": [
-      { "name": "pub-get", "run": "flutter pub get", "when": { "fileExists": "pubspec.yaml" } },
-      { "name": "format", "run": "dart format .", "when": { "fileExists": "pubspec.yaml" }, "autoFix": true },
-      { "name": "analyze", "run": "flutter analyze --no-fatal-infos", "when": { "fileExists": "pubspec.yaml" } },
-      { "name": "test", "run": "flutter test --coverage", "when": { "fileExists": ["pubspec.yaml", "test"] }, "countTests": true }
+      {
+        "name": "pub-get",
+        "run": "flutter pub get",
+        "when": {
+          "fileExists": "pubspec.yaml"
+        }
+      },
+      {
+        "name": "format",
+        "run": "dart format .",
+        "when": {
+          "fileExists": "pubspec.yaml"
+        },
+        "autoFix": true
+      },
+      {
+        "name": "analyze",
+        "run": "flutter analyze --no-fatal-infos",
+        "when": {
+          "fileExists": "pubspec.yaml"
+        }
+      },
+      {
+        "name": "test",
+        "run": "flutter test --coverage",
+        "when": {
+          "fileExists": [
+            "pubspec.yaml",
+            "test"
+          ]
+        },
+        "countTests": true
+      }
     ],
     "services": {},
-    "protectedPaths": { "analysis_options.yaml": [] },
-    "reviewExclude": [":(exclude)*.g.dart", ":(exclude)*.freezed.dart", ":(exclude)pubspec.lock", ":(exclude)**/*.png", ":(exclude)**/*.jpg"]
+    "protectedPaths": {
+      "analysis_options.yaml": []
+    },
+    "reviewExclude": [
+      ":(exclude)*.g.dart",
+      ":(exclude)*.freezed.dart",
+      ":(exclude)pubspec.lock",
+      ":(exclude)**/*.png",
+      ":(exclude)**/*.jpg"
+    ],
+    "worktree": {
+      "setup": [
+        "flutter pub get"
+      ],
+      "copy": []
+    }
   },
-  "allow": ["Bash(flutter:*)", "Bash(dart:*)"],
-  "deny": ["Bash(flutter run:*)", "Bash(flutter emulators:*)"]
+  "allow": [
+    "Bash(flutter:*)",
+    "Bash(dart:*)"
+  ],
+  "deny": [
+    "Bash(flutter run:*)",
+    "Bash(flutter emulators:*)"
+  ]
 }

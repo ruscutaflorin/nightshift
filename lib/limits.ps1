@@ -1,5 +1,5 @@
-# Detecting subscription usage limits in claude CLI output and deciding whether to
-# sleep until the reset or end the night.
+# Detecting subscription usage limits in claude CLI output, deciding how long to sleep, and the
+# active-hours windows the daemon starts new work in.
 
 $script:LimitPatterns = @(
     'usage limit',
@@ -78,12 +78,49 @@ function Get-Deadline([string]$HHmm, [datetime]$Now) {
     return $d
 }
 
-# Decide what to do after a limit hit: sleep until the reset (+2 min buffer) or stop
-# if the reset lands after the night's deadline.
-function Get-LimitDecision($ResetTime, [datetime]$Deadline, [datetime]$Now, [int]$FallbackMinutes) {
+# Decide what to do after a limit hit: sleep until the reset (+2 min buffer), or until the first
+# $ResumeAt ("HH:mm") at or after it, or stop if that lands after the run's deadline (only a run
+# started with -For / -Until has one). Probe = the reset time was unknown, so check with a cheap
+# session before spending a real one.
+function Get-LimitDecision($ResetTime, [datetime]$Deadline, [datetime]$Now, [int]$FallbackMinutes, [string]$ResumeAt) {
     $until = if ($ResetTime) { ([datetime]$ResetTime).AddMinutes(2) } else { $Now.AddMinutes($FallbackMinutes) }
-    if ($until -ge $Deadline) {
-        return [pscustomobject]@{ Action = 'stop'; Until = $until }
+    if ($ResumeAt) { $until = Get-Deadline $ResumeAt $until.AddSeconds(-1) }
+    $action = if ($until -ge $Deadline) { 'stop' } else { 'sleep' }
+    return [pscustomobject]@{ Action = $action; Until = $until; Probe = (-not $ResetTime) }
+}
+
+# "HH:mm-HH:mm" (may cross midnight; equal ends = all day).
+function ConvertTo-TimeWindow([string]$Text) {
+    if ($Text -notmatch '^\s*(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})\s*$') { throw "Can't parse active-hours window '$Text' (use e.g. 22:00-07:00)" }
+    return [pscustomobject]@{
+        Start = New-TimeSpan -Hours ([int]$Matches[1]) -Minutes ([int]$Matches[2])
+        End   = New-TimeSpan -Hours ([int]$Matches[3]) -Minutes ([int]$Matches[4])
     }
-    return [pscustomobject]@{ Action = 'sleep'; Until = $until }
+}
+
+# Whether $Now falls in any of the windows. No windows = always active.
+function Test-InActiveHours($Windows, [datetime]$Now) {
+    $list = @($Windows | Where-Object { $_ })
+    if (-not $list) { return $true }
+    $t = $Now.TimeOfDay
+    foreach ($w in $list) {
+        $win = ConvertTo-TimeWindow $w
+        if ($win.Start -eq $win.End) { return $true }
+        if ($win.Start -lt $win.End) {
+            if ($t -ge $win.Start -and $t -lt $win.End) { return $true }
+        } elseif ($t -ge $win.Start -or $t -lt $win.End) { return $true }
+    }
+    return $false
+}
+
+# $Now if active, else the next window start.
+function Get-NextActiveStart($Windows, [datetime]$Now) {
+    if (Test-InActiveHours $Windows $Now) { return $Now }
+    $best = $null
+    foreach ($w in @($Windows | Where-Object { $_ })) {
+        $c = $Now.Date.Add((ConvertTo-TimeWindow $w).Start)
+        if ($c -le $Now) { $c = $c.AddDays(1) }
+        if (-not $best -or $c -lt $best) { $best = $c }
+    }
+    return $best
 }

@@ -1,17 +1,62 @@
 {
   "config": {
     "baseBranch": "develop",
-    "stopAt": "07:00",
     "gates": [
-      { "name": "install", "run": "npm ci", "when": { "fileExists": "package-lock.json" } },
-      { "name": "lint", "run": "npm run lint --if-present", "when": { "fileExists": "package.json" } },
-      { "name": "typecheck", "run": "npx --no-install tsc --noEmit", "when": { "fileExists": "tsconfig.json" } },
-      { "name": "test", "run": "npm test --if-present", "when": { "fileExists": "package.json" }, "countTests": true, "testCountPattern": "Tests:\\s+(?:\\d+ \\w+, )*(\\d+) passed" }
+      {
+        "name": "install",
+        "run": "npm ci",
+        "when": {
+          "fileExists": "package-lock.json"
+        }
+      },
+      {
+        "name": "lint",
+        "run": "npm run lint --if-present",
+        "when": {
+          "fileExists": "package.json"
+        }
+      },
+      {
+        "name": "typecheck",
+        "run": "npx --no-install tsc --noEmit",
+        "when": {
+          "fileExists": "tsconfig.json"
+        }
+      },
+      {
+        "name": "test",
+        "run": "npm test --if-present",
+        "when": {
+          "fileExists": "package.json"
+        },
+        "countTests": true,
+        "testCountPattern": "Tests:\\s+(?:\\d+ \\w+, )*(\\d+) passed"
+      }
     ],
     "services": {},
     "protectedPaths": {},
-    "reviewExclude": [":(exclude)package-lock.json", ":(exclude)pnpm-lock.yaml", ":(exclude)yarn.lock", ":(exclude)**/*.png", ":(exclude)**/*.jpg"]
+    "reviewExclude": [
+      ":(exclude)package-lock.json",
+      ":(exclude)pnpm-lock.yaml",
+      ":(exclude)yarn.lock",
+      ":(exclude)**/*.png",
+      ":(exclude)**/*.jpg"
+    ],
+    "worktree": {
+      "setup": [
+        "npm ci"
+      ],
+      "copy": []
+    }
   },
-  "allow": ["Bash(npm:*)", "Bash(npx:*)", "Bash(node:*)"],
-  "deny": ["Bash(npm publish:*)", "Bash(npm run dev:*)", "Bash(npm start:*)"]
+  "allow": [
+    "Bash(npm:*)",
+    "Bash(npx:*)",
+    "Bash(node:*)"
+  ],
+  "deny": [
+    "Bash(npm publish:*)",
+    "Bash(npm run dev:*)",
+    "Bash(npm start:*)"
+  ]
 }

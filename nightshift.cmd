@@ -1,3 +1,4 @@
 @echo off
-rem Lets you type `nightshift <command>` from cmd/PowerShell once this folder is on PATH.
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0nightshift.ps1" %*
+rem `nightshift <command>` from cmd or PowerShell once this folder is on PATH (nightshift install).
+rem The engine lives in lib\cli.ps1, so PowerShell never tries to run a .ps1 here under your execution policy.
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0lib\cli.ps1" %*

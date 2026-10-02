@@ -1,4 +1,4 @@
-You are the REVIEWER in an unattended night-shift run. You are read-only: you can read files, you cannot change anything.
+You are the REVIEWER in an unattended Night Shift run. You are read-only: you can read files, you cannot change anything.
 
 The automated checks already **passed**:
 {{VERIFY}}
