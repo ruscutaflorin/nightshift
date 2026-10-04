@@ -30,6 +30,28 @@ $script:DefaultTestCountPattern = '\+(\d+)(?: ~\d+)?(?: -\d+)?: (?:All tests pas
 
 # Number of passing tests: group 1 of the LAST match of $Pattern in the output.
 # Examples: jest 'Tests:.*?(\d+) passed', pytest '(\d+) passed'. Returns $null when nothing matches.
+# The passing-test count a branch must keep: the count recorded for the tree it started from
+# (its merge-base with the base branch), else the newest one. A branch cut before the latest
+# landing lacks that landing's tests, which isn't a drop.
+function Select-TestBaseline($State, [string]$StartTree) {
+    if (-not $State) { return 0 }
+    if ($StartTree -and $State.PSObject.Properties['trees'] -and $State.trees.PSObject.Properties[$StartTree]) {
+        return [int]$State.trees.$StartTree
+    }
+    return [int]$State.count
+}
+
+# The baseline state after a landing whose tree is $Tree, keeping the newest $Keep trees.
+function Add-TestBaseline($State, [int]$Count, [string]$Tree, [int]$Keep = 300) {
+    $trees = [ordered]@{}
+    if ($State -and $State.PSObject.Properties['trees']) {
+        $old = @($State.trees.PSObject.Properties | Where-Object { $_.Name -ne $Tree })
+        foreach ($p in ($old | Select-Object -Last ([Math]::Max(0, $Keep - 1)))) { $trees[$p.Name] = $p.Value }
+    }
+    if ($Tree) { $trees[$Tree] = $Count }
+    return [pscustomobject]@{ count = $Count; trees = [pscustomobject]$trees }
+}
+
 function Get-PassedTestCount([string]$Output, [string]$Pattern) {
     if (-not $Pattern) { $Pattern = $script:DefaultTestCountPattern }
     $found = $null
