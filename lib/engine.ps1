@@ -130,6 +130,14 @@ function Get-Tail([string]$Path, [int]$Lines = 80) {
     return ((Get-Content $Path -Tail $Lines -Encoding UTF8) -join "`n")
 }
 
+# Reads a command's output file even while a process it left behind still holds it open for
+# writing (e.g. Prisma's detached update checker inherits the redirected stdout of `pnpm install`).
+function Read-LoggedText([string]$Path) {
+    if (-not (Test-Path $Path)) { return '' }
+    $fs = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete)
+    try { return (New-Object IO.StreamReader($fs)).ReadToEnd() } finally { $fs.Dispose() }
+}
+
 function Write-JsonFile([string]$Path, $Object) {
     $tmp = "$Path.$PID.tmp"
     [IO.File]::WriteAllText($tmp, ($Object | ConvertTo-Json -Depth 10), $script:Utf8)
@@ -407,8 +415,8 @@ function Invoke-Agent([string]$Role, [string]$Prompt, [string]$Model, [string]$P
     Write-Log "agent $Role ($Model) -> $base"
     $code = Invoke-Logged $cli $out $err $in $script:Config.agentTimeoutMinutes -AgentResult
 
-    $raw = if (Test-Path $out) { [IO.File]::ReadAllText($out) } else { '' }
-    $errText = if (Test-Path $err) { [IO.File]::ReadAllText($err) } else { '' }
+    $raw = Read-LoggedText $out
+    $errText = Read-LoggedText $err
     $result = $raw; $isError = ($code -ne 0); $cost = 0.0; $overBudget = $false
     try {
         $json = $raw | ConvertFrom-Json
@@ -595,7 +603,7 @@ function Invoke-Gate([string]$Name, [string]$CommandLine, [string]$Label, [int]$
     $log = Join-Path $script:SessionsDir "$(Get-Stamp)-$($script:SlotName)-gate-$Label-$Name.log"
     Write-Log "gate $Name"
     $code = Invoke-Logged $CommandLine $log $null $null $TimeoutMinutes
-    $output = if (Test-Path $log) { [IO.File]::ReadAllText($log) } else { '' }
+    $output = Read-LoggedText $log
     $why = if ($code -eq -1) { "timed out after $TimeoutMinutes min" } else { "exit code $code" }
     return [pscustomobject]@{
         Pass     = ($code -eq 0)

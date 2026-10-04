@@ -585,7 +585,7 @@ function Get-PrBody($P) {
 function Invoke-Gh([string]$ArgLine, [string]$Label) {
     $log = Join-Path $script:SessionsDir "$(Get-Stamp)-integrate-gh-$Label.log"
     $code = Invoke-Logged "gh $ArgLine" $log $null $null 5
-    return [pscustomobject]@{ Ok = ($code -eq 0); Text = $(if (Test-Path $log) { [IO.File]::ReadAllText($log) } else { '' }) }
+    return [pscustomobject]@{ Ok = ($code -eq 0); Text = (Read-LoggedText $log) }
 }
 
 # Push, open (or reuse) the PR, merge it. With required checks, auto-merge and wait.
