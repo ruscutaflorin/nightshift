@@ -19,11 +19,39 @@ function Get-ProtectedPathViolations([string[]]$ChangedPaths, $Protected, [strin
     return , @($violations | Select-Object -Unique)
 }
 
+# A single task tagged [test-audit] prunes low-value tests, so it may lower the passing-test
+# count. TASKS.md is protected, so only the owner can grant the tag; batches never get it.
+function Test-TestDropAllowed([string]$TaskText, [int]$TaskCount = 1) {
+    return ($TaskCount -eq 1 -and $TaskText -match '(?i)\[test-audit\]')
+}
+
 # Default: dart/flutter test summary ("00:05 +42 ~1: All tests passed!").
 $script:DefaultTestCountPattern = '\+(\d+)(?: ~\d+)?(?: -\d+)?: (?:All tests passed|Some tests failed)'
 
 # Number of passing tests: group 1 of the LAST match of $Pattern in the output.
 # Examples: jest 'Tests:.*?(\d+) passed', pytest '(\d+) passed'. Returns $null when nothing matches.
+# The passing-test count a branch must keep: the count recorded for the tree it started from
+# (its merge-base with the base branch), else the newest one. A branch cut before the latest
+# landing lacks that landing's tests, which isn't a drop.
+function Select-TestBaseline($State, [string]$StartTree) {
+    if (-not $State) { return 0 }
+    if ($StartTree -and $State.PSObject.Properties['trees'] -and $State.trees.PSObject.Properties[$StartTree]) {
+        return [int]$State.trees.$StartTree
+    }
+    return [int]$State.count
+}
+
+# The baseline state after a landing whose tree is $Tree, keeping the newest $Keep trees.
+function Add-TestBaseline($State, [int]$Count, [string]$Tree, [int]$Keep = 300) {
+    $trees = [ordered]@{}
+    if ($State -and $State.PSObject.Properties['trees']) {
+        $old = @($State.trees.PSObject.Properties | Where-Object { $_.Name -ne $Tree })
+        foreach ($p in ($old | Select-Object -Last ([Math]::Max(0, $Keep - 1)))) { $trees[$p.Name] = $p.Value }
+    }
+    if ($Tree) { $trees[$Tree] = $Count }
+    return [pscustomobject]@{ count = $Count; trees = [pscustomobject]$trees }
+}
+
 function Get-PassedTestCount([string]$Output, [string]$Pattern) {
     if (-not $Pattern) { $Pattern = $script:DefaultTestCountPattern }
     $found = $null

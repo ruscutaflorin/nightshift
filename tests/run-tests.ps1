@@ -155,6 +155,21 @@ try {
     Assert-Equal 40 (Get-PassedTestCount '00:05 +40 -2: Some tests failed.') 'passed count with failures'
     Assert-Equal '' "$(Get-PassedTestCount 'no summary')" 'no summary -> null'
 
+    Assert-Equal 0 (Select-TestBaseline $null 't1') 'no baseline yet -> 0'
+    Assert-Equal 117 (Select-TestBaseline ([pscustomobject]@{ count = 117 }) 't1') 'old count-only baseline still read'
+    $bl = Add-TestBaseline $null 100 't1'
+    $bl = Add-TestBaseline $bl 110 't2'
+    Assert-Equal 110 (Select-TestBaseline $bl 't2') 'branch from the newest landing -> newest count'
+    Assert-Equal 100 (Select-TestBaseline $bl 't1') 'branch cut before the newest landing -> its own start count'
+    Assert-Equal 110 (Select-TestBaseline $bl 'unknown') 'unknown start tree -> newest count'
+    $bl = Add-TestBaseline $bl 120 't3' 2
+    Assert-Equal 't2 t3' (@($bl.trees.PSObject.Properties.Name) -join ' ') 'baseline history keeps only the newest trees'
+
+    Assert-Equal $true (Test-TestDropAllowed '9.1 [test-audit] Prune server route tests') 'tagged task may drop tests'
+    Assert-Equal $true (Test-TestDropAllowed '9.1 [Test-Audit] prune' 1) 'tag is case-insensitive'
+    Assert-Equal $false (Test-TestDropAllowed '9.2 Add a rating model') 'untagged task keeps the baseline'
+    Assert-Equal $false (Test-TestDropAllowed "These 2 tasks:`n- 9.1 [test-audit] x`n- 9.2 y" 2) 'batches never drop tests'
+
     $r = Get-ReviewVerdict "Looks fine.`n{`"verdict`":`"approve`",`"issues`":[]}"
     Assert-Equal 'approve' $r.verdict 'reads approve verdict'
     $r = Get-ReviewVerdict "Problems.`n``{`"verdict`":`"changes`",`"issues`":[`"lib/a.dart:3 - bug - fix`"]}``"

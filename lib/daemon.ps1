@@ -644,7 +644,7 @@ function Merge-ReadyBranch($P) {
         if ($job.Kind -ne 'product') {
             $changed = @(Invoke-Git "diff --name-only $($script:BaseRef)...HEAD" | Where-Object { $_.Trim() })
             Write-Log "base moved since $($job.Id) was checked; re-running the checks"
-            $g = Invoke-Gates "$safe-int" $changed
+            $g = Invoke-Gates "$safe-int" $changed -AllowTestDrop:(Test-TestDropAllowed $job.TaskText @($job.Ids).Count)
             if (-not $g.Pass) { return [pscustomobject]@{ Ok = $false; Reason = $g.Feedback; Gate = $g.Gate } }
             $summary = $g.Summary; $testCount = $g.TestCount
         }

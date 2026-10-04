@@ -275,7 +275,7 @@ function Invoke-WorkItem($Item) {
         }
 
         Write-SlotStatus 'checks'
-        $gates = Invoke-Gates $safe $changed
+        $gates = Invoke-Gates $safe $changed -AllowTestDrop:(Test-TestDropAllowed $Item.TaskText @($Item.Ids).Count)
         if (-not $gates.Pass) {
             $feedback = (@($gates.Feedback, $restoredNote) | Where-Object { $_ }) -join "`n`n"
             $lastGate = $gates.Gate
@@ -481,7 +481,7 @@ function Invoke-MergeJob($Job) {
     $violations = Get-ProtectedPathViolations $changed $script:Protected $Job.Ids
     if ($violations.Count -gt 0) { Restore-ProtectedPaths $violations }
     Write-SlotStatus 'checks'
-    $gates = Invoke-Gates "$safe-merge" $changed
+    $gates = Invoke-Gates "$safe-merge" $changed -AllowTestDrop:(Test-TestDropAllowed $Job.TaskText @($Job.Ids).Count)
     if (-not $gates.Pass) { return [pscustomobject]@{ outcome = 'failed'; branch = $branch; reason = $gates.Feedback; gate = $gates.Gate } }
     return [pscustomobject]@{ outcome = 'ready'; branch = $branch; summary = "$($gates.Summary); merged the newer base"; testCount = $gates.TestCount; attempt = $Job.Attempt }
 }

@@ -443,6 +443,7 @@ function Set-LimitState([datetime]$Until, [bool]$Probe) {
     if ($cur -and [datetime]$cur.until -ge $Until) { return }
     Write-JsonFile $script:LimitFile ([pscustomobject]@{ until = $Until.ToString('s'); probe = $Probe; set = (Get-Date).ToString('s') })
     Add-Report "- [limit] $(Get-Date -Format 'HH:mm') usage limit; every worker waits until $($Until.ToString('ddd HH:mm'))"
+    Send-Notice "Night Shift hit the usage limit ($($script:Config.name))" "Every worker waits until $($Until.ToString('ddd HH:mm')), then carries on."
 }
 
 # A one-line haiku session: is the subscription usable again?
@@ -570,14 +571,24 @@ function Initialize-ServicesForItem($Item) {
 
 # ---------------------------------------------------------------- gates
 
-function Get-TestBaseline {
-    $b = Read-JsonFile $script:BaselineFile
-    if ($b) { return [int]$b.count }
-    return 0
+function Get-TreeOf([string]$Rev) {
+    return ((Invoke-Git "log -1 --format=%T $Rev" -AllowFail) -join '').Trim()
 }
 
+# Compared against the count where this branch started (see Select-TestBaseline).
+function Get-TestBaseline {
+    $b = Read-JsonFile $script:BaselineFile
+    $start = ''
+    if ($b -and $script:BaseRef) {
+        $mb = ((Invoke-Git "merge-base $($script:BaseRef) HEAD" -AllowFail) -join '').Trim()
+        if ($script:GitExit -eq 0 -and $mb) { $start = Get-TreeOf $mb }
+    }
+    return (Select-TestBaseline $b $start)
+}
+
+# Called on the branch about to land, so HEAD's tree is the tree the base gets.
 function Set-TestBaseline([int]$Count) {
-    Write-JsonFile $script:BaselineFile ([pscustomobject]@{ count = $Count })
+    Write-JsonFile $script:BaselineFile (Add-TestBaseline (Read-JsonFile $script:BaselineFile) $Count (Get-TreeOf 'HEAD'))
 }
 
 function Invoke-Gate([string]$Name, [string]$CommandLine, [string]$Label, [int]$TimeoutMinutes) {
@@ -594,7 +605,8 @@ function Invoke-Gate([string]$Name, [string]$CommandLine, [string]$Label, [int]$
 }
 
 # Gates marked "exclusive" (or using an "exclusive" service) run one worker at a time.
-function Invoke-Gates([string]$Label, [string[]]$ChangedPaths) {
+# -AllowTestDrop (a [test-audit] task) skips the drop check but still needs passing tests.
+function Invoke-Gates([string]$Label, [string[]]$ChangedPaths, [switch]$AllowTestDrop) {
     $result = [pscustomobject]@{ Pass = $true; Feedback = ''; TestCount = $null; Summary = ''; Gate = '' }
     $tasks = Read-TaskList $script:TasksPath
     $ran = New-Object System.Collections.ArrayList
@@ -616,6 +628,15 @@ function Invoke-Gates([string]$Label, [string[]]$ChangedPaths) {
         if ($gate.countTests) { $result.TestCount = Get-PassedTestCount $g.Output $gate.testCountPattern }
         if (-not $g.Pass) { $result.Pass = $false; $result.Feedback = $g.Feedback; $result.Gate = $gate.name; return $result }
         if ($gate.countTests -and $null -ne $result.TestCount) {
+            if ($AllowTestDrop) {
+                if ($result.TestCount -le 0) {
+                    $result.Pass = $false
+                    $result.Gate = $gate.name
+                    $result.Feedback = "No passing tests were counted. A test audit may remove low-value tests, not all of them."
+                    return $result
+                }
+                continue
+            }
             $baseline = Get-TestBaseline
             if ($result.TestCount -lt $baseline) {
                 $result.Pass = $false
