@@ -19,6 +19,12 @@ function Get-ProtectedPathViolations([string[]]$ChangedPaths, $Protected, [strin
     return , @($violations | Select-Object -Unique)
 }
 
+# A single task tagged [test-audit] prunes low-value tests, so it may lower the passing-test
+# count. TASKS.md is protected, so only the owner can grant the tag; batches never get it.
+function Test-TestDropAllowed([string]$TaskText, [int]$TaskCount = 1) {
+    return ($TaskCount -eq 1 -and $TaskText -match '(?i)\[test-audit\]')
+}
+
 # Default: dart/flutter test summary ("00:05 +42 ~1: All tests passed!").
 $script:DefaultTestCountPattern = '\+(\d+)(?: ~\d+)?(?: -\d+)?: (?:All tests passed|Some tests failed)'
 

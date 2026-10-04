@@ -24,7 +24,7 @@ plus the protected-path and test-count checks. Your job is what the checks can't
 
 1. **Scope** — does the change do this task (and not silently skip parts of it, or wander into other tasks)?
 2. **Correctness** — obvious bugs, wrong edge cases, logic that contradicts `{{PLAN_FILE}}`.
-3. **Tests** — do the tests actually exercise the behavior, or are they hollow (asserting nothing meaningful, testing mocks, skipped)?
+3. **Tests** — do the tests actually exercise the behavior, or are they hollow (asserting nothing meaningful, testing mocks, skipped, or matching a junk pattern in the project's testing policy)? For a `[test-audit]` task, every removed test must name the stronger test that still covers it.
 4. **Guardrails** — the project rules above, `CLAUDE.md`, no secrets.
 5. **Maintainability** — would a teammate be comfortable building the next task on top of this?
 

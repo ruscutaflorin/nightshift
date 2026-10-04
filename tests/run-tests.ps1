@@ -155,6 +155,11 @@ try {
     Assert-Equal 40 (Get-PassedTestCount '00:05 +40 -2: Some tests failed.') 'passed count with failures'
     Assert-Equal '' "$(Get-PassedTestCount 'no summary')" 'no summary -> null'
 
+    Assert-Equal $true (Test-TestDropAllowed '9.1 [test-audit] Prune server route tests') 'tagged task may drop tests'
+    Assert-Equal $true (Test-TestDropAllowed '9.1 [Test-Audit] prune' 1) 'tag is case-insensitive'
+    Assert-Equal $false (Test-TestDropAllowed '9.2 Add a rating model') 'untagged task keeps the baseline'
+    Assert-Equal $false (Test-TestDropAllowed "These 2 tasks:`n- 9.1 [test-audit] x`n- 9.2 y" 2) 'batches never drop tests'
+
     $r = Get-ReviewVerdict "Looks fine.`n{`"verdict`":`"approve`",`"issues`":[]}"
     Assert-Equal 'approve' $r.verdict 'reads approve verdict'
     $r = Get-ReviewVerdict "Problems.`n``{`"verdict`":`"changes`",`"issues`":[`"lib/a.dart:3 - bug - fix`"]}``"

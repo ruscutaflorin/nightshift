@@ -4,7 +4,7 @@ There is no feature work queued. Make **one** small, focused, low-risk quality i
 
 Pick the most valuable of:
 - a real bug you can prove with a failing test (then fix it)
-- missing tests for untested behavior
+- missing tests for untested behavior that pass the project's testing policy ("untested" alone is not enough)
 - accessibility or error/empty-state gaps, covered by a test
 - linter warnings, dead code, duplicated logic that clearly should be one function
 

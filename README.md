@@ -205,7 +205,7 @@ moved forward. If not, it restores the local refs and pauses until you look.
 - The supervisor doesn't trust the agents:
   - It runs the checks itself.
   - It reverts changes to protected paths.
-  - It rejects a drop in the passing-test count.
+  - It rejects a drop in the passing-test count, except for a single task tagged `[test-audit]` in TASKS.md, which may prune low-value tests (it still needs passing tests).
   - It re-runs the checks when the base moved before merging.
 - Workers never merge or push; only the integrator does, one item at a time.
 - Your checkout is never switched or touched. Local `develop` is fast-forwarded only when that

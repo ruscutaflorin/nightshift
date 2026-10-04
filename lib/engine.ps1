@@ -594,7 +594,8 @@ function Invoke-Gate([string]$Name, [string]$CommandLine, [string]$Label, [int]$
 }
 
 # Gates marked "exclusive" (or using an "exclusive" service) run one worker at a time.
-function Invoke-Gates([string]$Label, [string[]]$ChangedPaths) {
+# -AllowTestDrop (a [test-audit] task) skips the drop check but still needs passing tests.
+function Invoke-Gates([string]$Label, [string[]]$ChangedPaths, [switch]$AllowTestDrop) {
     $result = [pscustomobject]@{ Pass = $true; Feedback = ''; TestCount = $null; Summary = ''; Gate = '' }
     $tasks = Read-TaskList $script:TasksPath
     $ran = New-Object System.Collections.ArrayList
@@ -616,6 +617,15 @@ function Invoke-Gates([string]$Label, [string[]]$ChangedPaths) {
         if ($gate.countTests) { $result.TestCount = Get-PassedTestCount $g.Output $gate.testCountPattern }
         if (-not $g.Pass) { $result.Pass = $false; $result.Feedback = $g.Feedback; $result.Gate = $gate.name; return $result }
         if ($gate.countTests -and $null -ne $result.TestCount) {
+            if ($AllowTestDrop) {
+                if ($result.TestCount -le 0) {
+                    $result.Pass = $false
+                    $result.Gate = $gate.name
+                    $result.Feedback = "No passing tests were counted. A test audit may remove low-value tests, not all of them."
+                    return $result
+                }
+                continue
+            }
             $baseline = Get-TestBaseline
             if ($result.TestCount -lt $baseline) {
                 $result.Pass = $false
